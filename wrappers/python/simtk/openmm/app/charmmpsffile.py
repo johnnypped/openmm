@@ -166,7 +166,7 @@ class CharmmPsfFile(object):
     GB_FORCE_GROUP = 6
 
     @_catchindexerror
-    def __init__(self, psf_name):
+    def __init__(self, psf_name, periodicBoxVectors=None, unitCellDimensions=None):
         """Opens and parses a PSF file, then instantiates a CharmmPsfFile
         instance from the data.
 
@@ -174,6 +174,11 @@ class CharmmPsfFile(object):
         ----------
         psf_name : str
             Name of the PSF file (it must exist)
+        periodicBoxVectors : tuple of Vec3
+            the vectors defining the periodic box
+        unitCellDimensions : Vec3
+            the dimensions of the crystallographic unit cell.  For
+            non-rectangular unit cells, specify periodicBoxVectors instead.
 
         Raises
         ------
@@ -358,7 +363,10 @@ class CharmmPsfFile(object):
         set_molecules(atom_list)
         molecule_list = [atom.marked for atom in atom_list]
         if len(holder) == len(atom_list):
-            if molecule_list != holder:
+            if len(molecule_list) != len(holder):
+                # The MOLNT section is only used for fluctuating charge models,
+                # which are currently not supported anyway.
+                # Therefore, we only check the lengths of the lists now rather than their contents.
                 warnings.warn('Detected PSF molecule section that is WRONG. '
                               'Resetting molecularity.', CharmmPSFWarning)
         # We have a CHARMM PSF file; now do NUMLP/NUMLPH sections
@@ -366,25 +374,30 @@ class CharmmPsfFile(object):
         holder = psfsections['NUMLP NUMLPH'][1]
         lonepair_list = TrackedList()
         if numlp != 0 or numlph != 0:
+            lp_hostnum_list=[]
             lp_distance_list=[]
             lp_angle_list=[]
             lp_dihe_list=[]
             for i in range(numlp):
                 lpline = holder[i].split()
-                if len(lpline)!=6 or lpline[0] != '3' or lpline[2] != 'F' or int(lpline[1]) != 4*i+1 :
+                if len(lpline)!=6 or lpline[2] != 'F' :
                     raise CharmmPSFError('Lonepair format error')
                 else:
+                    lp_hostnum_list.append(int(lpline[0]))
                     lp_distance_list.append(float(lpline[3]))
                     lp_angle_list.append(float(lpline[4]))
                     lp_dihe_list.append(float(lpline[5]))
+            lp_atom_counter=0
             for i in range(numlp):
-                lpline = holder[int(i/2)+numlp].split()
-                icolumn = (i%2) * 4
-                id1=int(lpline[icolumn])  -1
-                id2=int(lpline[icolumn+1])-1
-                id3=int(lpline[icolumn+2])-1
-                id4=int(lpline[icolumn+3])-1
-                lonepair_list.append([id1, id2, id3, id4, lp_distance_list[i], lp_angle_list[i], lp_dihe_list[i]])
+                idall=[]
+                for j in range(lp_hostnum_list[i]+1):
+                    iline = int((lp_atom_counter+j)/8)+numlp
+                    icolumn = (lp_atom_counter+j)%8
+                    idall.append(int(holder[iline].split()[icolumn])-1)
+                if len(idall)==3:
+                    idall.append(-1) # use id4=-1 to mark colinear
+                lonepair_list.append([idall[0], idall[1], idall[2], idall[3], lp_distance_list[i], lp_angle_list[i], lp_dihe_list[i]])
+                lp_atom_counter += lp_hostnum_list[i]+1
         # In Drude psf, here comes anisotropic section
         if IsDrudePSF:
             numaniso = psfsections['NUMANISO'][0]
@@ -444,7 +457,14 @@ class CharmmPsfFile(object):
         self.group_list = group_list
         self.title = title
         self.flags = psf_flags
-        self.box_vectors = None
+        if unitCellDimensions is not None:
+            if periodicBoxVectors is not None:
+                raise ValueError("specify either periodicBoxVectors or unitCellDimensions, but not both")
+            if u.is_quantity(unitCellDimensions):
+                unitCellDimensions = unitCellDimensions.value_in_unit(u.nanometers)
+            self.box_vectors = (Vec3(unitCellDimensions[0], 0, 0), Vec3(0, unitCellDimensions[1], 0), Vec3(0, 0, unitCellDimensions[2]))*u.nanometers
+        else:
+            self.box_vectors = periodicBoxVectors
 
     @staticmethod
     def _convert(string, type, message):
@@ -702,13 +722,15 @@ class CharmmPsfFile(object):
             if atom.system != last_chain:
                 chain = topology.addChain(atom.system)
                 last_chain = atom.system
+                last_residue = None
             if resid != last_residue:
                 last_residue = resid
-                residue = topology.addResidue(atom.residue.resname, chain, resid)
+                residue = topology.addResidue(atom.residue.resname, chain, str(atom.residue.idx), atom.residue.inscode)
             if atom.type is not None:
                 # This is the most reliable way of determining the element
                 atomic_num = atom.type.atomic_number
-                elem = element.Element.getByAtomicNumber(atomic_num)
+                if atomic_num != 0:
+                    elem = element.Element.getByAtomicNumber(atomic_num)
             else:
                 # Figure it out from the mass
                 elem = element.Element.getByMass(atom.mass)
@@ -905,23 +927,34 @@ class CharmmPsfFile(object):
                                          bond.bond_type.req*length_conv)
 
         # Add virtual sites
-        if verbose: print('Adding lonepairs...')
-        for lpsite in self.lonepair_list:
-            index=lpsite[0]
-            atom1=lpsite[1]
-            atom2=lpsite[2]
-            atom3=lpsite[3]
-            if lpsite[4] > 0 : #relative
-                r = lpsite[4] /10.0 # in nanometer
-                xweights = [-1.0, 0.0, 1.0]
-            elif lpsite[4] < 0: # bisector
-                r = lpsite[4] / (-10.0)
-                xweights = [-1.0, 0.5, 0.5]
-            theta = lpsite[5] * pi / 180.0
-            phi = (180.0 - lpsite[6]) * pi / 180.0
-            p = [r*cos(theta), r*sin(theta)*cos(phi), r*sin(theta)*sin(phi)]
-            p = [x if abs(x) > 1e-10 else 0 for x in p] # Avoid tiny numbers caused by roundoff error
-            system.setVirtualSite(index, mm.LocalCoordinatesSite(atom1, atom3, atom2, mm.Vec3(1.0, 0.0, 0.0), mm.Vec3(xweights[0],xweights[1],xweights[2]), mm.Vec3(0.0, -1.0, 1.0), mm.Vec3(p[0],p[1],p[2])))
+        if hasattr(self, 'lonepair_list'):
+            if verbose: print('Adding lonepairs...')
+            for lpsite in self.lonepair_list:
+                index=lpsite[0]
+                atom1=lpsite[1]
+                atom2=lpsite[2]
+                atom3=lpsite[3]
+                if atom3 > 0: 
+                    if lpsite[4] > 0 : # relative lonepair type
+                        r = lpsite[4] /10.0 # in nanometer
+                        xweights = [-1.0, 0.0, 1.0]
+                    elif lpsite[4] < 0: # bisector lonepair type
+                        r = lpsite[4] / (-10.0)
+                        xweights = [-1.0, 0.5, 0.5]
+                    theta = lpsite[5] * pi / 180.0
+                    phi = (180.0 - lpsite[6]) * pi / 180.0
+                    p = [r*cos(theta), r*sin(theta)*cos(phi), r*sin(theta)*sin(phi)]
+                    p = [x if abs(x) > 1e-10 else 0 for x in p] # Avoid tiny numbers caused by roundoff error
+                    system.setVirtualSite(index, mm.LocalCoordinatesSite(atom1, atom3, atom2, mm.Vec3(1.0, 0.0, 0.0), mm.Vec3(xweights[0],xweights[1],xweights[2]), mm.Vec3(0.0, -1.0, 1.0), mm.Vec3(p[0],p[1],p[2])))
+                else: # colinear lonepair type
+                    # find a real atom to be the third one for LocalCoordinatesSite
+                    for bond in self.bond_list:
+                        if (bond.atom1.idx == atom2 and bond.atom2.idx != atom1):
+                            a3=bond.atom2.idx
+                        elif (bond.atom2.idx == atom2 and bond.atom1.idx != atom1):
+                            a3=bond.atom1.idx
+                    r = lpsite[4] / 10.0 # in nanometer
+                    system.setVirtualSite(index, mm.LocalCoordinatesSite(atom1, atom2, a3, mm.Vec3(1.0, 0.0, 0.0), mm.Vec3(1.0,-1.0, 0.0), mm.Vec3(0.0, -1.0, 1.0), mm.Vec3(r,0.0,0.0)))   
         # Add Bond forces
         if verbose: print('Adding bonds...')
         force = mm.HarmonicBondForce()
@@ -1064,6 +1097,7 @@ class CharmmPsfFile(object):
         # Add nonbonded terms now
         if verbose: print('Adding nonbonded interactions...')
         force = mm.NonbondedForce()
+        force.setUseDispersionCorrection(False)
         force.setForceGroup(self.NONBONDED_FORCE_GROUP)
         if not hasbox: # non-periodic
             if nonbondedMethod is ff.NoCutoff:
@@ -1203,7 +1237,6 @@ class CharmmPsfFile(object):
             if (nonbondedMethod in (ff.PME, ff.LJPME, ff.Ewald, ff.CutoffPeriodic)):
                 cforce.setNonbondedMethod(cforce.CutoffPeriodic)
                 cforce.setCutoffDistance(nonbondedCutoff)
-                cforce.setUseLongRangeCorrection(True)
             elif nonbondedMethod is ff.NoCutoff:
                 cforce.setNonbondedMethod(cforce.NoCutoff)
             elif nonbondedMethod is ff.CutoffNonPeriodic:

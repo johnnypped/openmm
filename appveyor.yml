@@ -11,6 +11,7 @@ install:
   - "set PATH=C:\\Program Files (x86)\\Git\\bin;%PATH%"
   - pip install pytest
   - pip install numpy
+  - pip install cython
 
 # Use cclash for compiler caching (experimental)
   - ps: wget https://github.com/inorton/cclash/releases/download/0.3.14/cclash-0.3.14.zip -OutFile cclash-0.3.14.zip
@@ -27,7 +28,7 @@ install:
   - "set PATH=C:\\fftw;%PATH%"
 
 # Download and install some OpenMM build dependencies (doxygen, swig)
-  - choco install -y doxygen.portable swig > null
+  - choco install -y doxygen.install swig > null
 
 # Download OpenCL Headers and build the ICD loader
   - ps: "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12;"

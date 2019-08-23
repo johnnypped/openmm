@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2019 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -88,6 +88,7 @@ void OpenCLExpressionUtilities::processExpression(stringstream& out, const Expre
             // at once, so check to see if both are needed.
 
             vector<const ExpressionTreeNode*> nodes;
+            nodes.push_back(&node);
             for (int j = 0; j < (int) allExpressions.size(); j++)
                 findRelatedCustomFunctions(node, allExpressions[j].getRootNode(), nodes);
             vector<string> nodeNames;
@@ -146,7 +147,7 @@ void OpenCLExpressionUtilities::processExpression(stringstream& out, const Expre
                     if (derivOrder[0] == 0 && derivOrder[1] == 0)
                         out << nodeNames[j] << " = dot(" << child1 << ", " << child2 << ");\n";
                     else
-                        throw OpenMMException("Unsupported derivative order for cross()");
+                        throw OpenMMException("Unsupported derivative order for dot()");
                 }
             }
             else if (node.getOperation().getName() == "cross") {
@@ -462,6 +463,9 @@ void OpenCLExpressionUtilities::processExpression(stringstream& out, const Expre
             break;
         case Operation::ATAN:
             out << "atan(" << getTempName(node.getChildren()[0], temps) << ")";
+            break;
+        case Operation::ATAN2:
+            out << "atan2(" << getTempName(node.getChildren()[0], temps) << ", " << getTempName(node.getChildren()[1], temps) << ")";
             break;
         case Operation::SINH:
             out << "sinh(" << getTempName(node.getChildren()[0], temps) << ")";

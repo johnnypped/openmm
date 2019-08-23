@@ -127,6 +127,14 @@ class TestAmberPrmtopFile(unittest.TestCase):
                     self.assertTrue(found_matching_solvent_dielectric and
                                     found_matching_solute_dielectric)
 
+    def test_ImplicitSolventZeroSA(self):
+        """Test that requesting gbsaModel=None yields a surface area energy of 0 when 
+           prmtop.createSystem produces a GBSAOBCForce"""
+        system = prmtop2.createSystem(implicitSolvent=OBC2, gbsaModel=None)
+        for force in system.getForces():
+            if isinstance(force, GBSAOBCForce):
+                self.assertEqual(force.getSurfaceAreaEnergy(), 0*kilojoule/(nanometer**2*mole))
+
     def test_HydrogenMass(self):
         """Test that altering the mass of hydrogens works correctly."""
 
@@ -293,7 +301,8 @@ class TestAmberPrmtopFile(unittest.TestCase):
             context = Context(system, integrator, Platform.getPlatformByName("Reference"))
             context.setPositions(pdb.positions)
             state1 = context.getState(getForces=True)
-            state2 = XmlSerializer.deserialize(open('systems/alanine-dipeptide-implicit-forces/'+file[i]+'.xml').read())
+            with open('systems/alanine-dipeptide-implicit-forces/'+file[i]+'.xml') as infile:
+                state2 = XmlSerializer.deserialize(infile.read())
             for f1, f2, in zip(state1.getForces().value_in_unit(kilojoules_per_mole/nanometer), state2.getForces().value_in_unit(kilojoules_per_mole/nanometer)):
                 diff = norm(f1-f2)
                 self.assertTrue(diff < 0.1 or diff/norm(f1) < 1e-4)

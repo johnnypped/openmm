@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2019 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -1561,6 +1561,7 @@ CudaCalcNonbondedForceKernel::~CudaCalcNonbondedForceKernel() {
         if (usePmeStream) {
             cuStreamDestroy(pmeStream);
             cuEventDestroy(pmeSyncEvent);
+            cuEventDestroy(paramsSyncEvent);
         }
     }
 }
@@ -1574,15 +1575,26 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
 
     // Identify which exceptions are 1-4 interactions.
 
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     vector<pair<int, int> > exclusions;
     vector<int> exceptions;
+    map<int, int> exceptionIndex;
     for (int i = 0; i < force.getNumExceptions(); i++) {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
         exclusions.push_back(pair<int, int>(particle1, particle2));
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end()) {
+            exceptionIndex[i] = exceptions.size();
             exceptions.push_back(i);
+        }
     }
 
     // Initialize nonbonded interactions.
@@ -1602,6 +1614,16 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
         if (epsilon != 0.0)
             hasLJ = true;
     }
+    for (int i = 0; i < force.getNumParticleParameterOffsets(); i++) {
+        string param;
+        int particle;
+        double charge, sigma, epsilon;
+        force.getParticleParameterOffset(i, param, particle, charge, sigma, epsilon);
+        if (charge != 0.0)
+            hasCoulomb = true;
+        if (epsilon != 0.0)
+            hasLJ = true;
+    }
     for (auto exclusion : exclusions) {
         exclusionList[exclusion.first].push_back(exclusion.second);
         exclusionList[exclusion.second].push_back(exclusion.first);
@@ -1610,8 +1632,8 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
     bool useCutoff = (nonbondedMethod != NoCutoff);
     bool usePeriodic = (nonbondedMethod != NoCutoff && nonbondedMethod != CutoffNonPeriodic);
     doLJPME = (nonbondedMethod == LJPME && hasLJ);
-    if (hasCoulomb)
-        usePosqCharges = cu.requestPosqCharges();
+    usePosqCharges = hasCoulomb ? cu.requestPosqCharges() : false;
+
     map<string, string> defines;
     defines["HAS_COULOMB"] = (hasCoulomb ? "1" : "0");
     defines["HAS_LENNARD_JONES"] = (hasLJ ? "1" : "0");
@@ -1643,6 +1665,8 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
     hasOffsets = (force.getNumParticleParameterOffsets() > 0 || force.getNumExceptionParameterOffsets() > 0);
     if (hasOffsets)
         paramsDefines["HAS_OFFSETS"] = "1";
+    if (usePosqCharges)
+        paramsDefines["USE_POSQ_CHARGES"] = "1";
     if (nonbondedMethod == Ewald) {
         // Compute the Ewald parameters.
 
@@ -1655,7 +1679,7 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
             paramsDefines["INCLUDE_EWALD"] = "1";
             paramsDefines["EWALD_SELF_ENERGY_SCALE"] = cu.doubleToString(ONE_4PI_EPS0*alpha/sqrt(M_PI));
             for (int i = 0; i < numParticles; i++)
-                ewaldSelfEnergy += baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
+                ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
 
             // Create the reciprocal space kernels.
 
@@ -1760,6 +1784,7 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
                     pmeDefines["GRID_SIZE_Z"] = cu.intToString(dispersionGridSizeZ);
                     pmeDefines["RECIP_EXP_FACTOR"] = cu.doubleToString(M_PI*M_PI/(dispersionAlpha*dispersionAlpha));
                     pmeDefines["USE_LJPME"] = "1";
+                    pmeDefines["CHARGE_FROM_SIGEPS"] = "1";
                     double invRCut6 = pow(force.getCutoffDistance(), -6);
                     double dalphaR = dispersionAlpha * force.getCutoffDistance();
                     double dar2 = dalphaR*dalphaR;
@@ -1797,7 +1822,6 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
                     pmeDispersionBsplineModuliY.initialize(cu, dispersionGridSizeY, elementSize, "pmeDispersionBsplineModuliY");
                     pmeDispersionBsplineModuliZ.initialize(cu, dispersionGridSizeZ, elementSize, "pmeDispersionBsplineModuliZ");
                 }
-                pmeAtomRange.initialize<int>(cu, gridSizeX*gridSizeY*gridSizeZ+1, "pmeAtomRange");
                 pmeAtomGridIndex.initialize<int2>(cu, numParticles, "pmeAtomGridIndex");
                 int energyElementSize = (cu.getUseDoublePrecision() || cu.getUseMixedPrecision() ? sizeof(double) : sizeof(float));
                 pmeEnergyBuffer.initialize(cu, cu.getNumThreadBlocks()*CudaContext::ThreadBlockSize, energyElementSize, "pmeEnergyBuffer");
@@ -1837,10 +1861,13 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
                     if (useCudaFFT) {
                         cufftSetStream(fftForward, pmeStream);
                         cufftSetStream(fftBackward, pmeStream);
-                        cufftSetStream(dispersionFftForward, pmeStream);
-                        cufftSetStream(dispersionFftBackward, pmeStream);
+                        if (doLJPME) {
+                            cufftSetStream(dispersionFftForward, pmeStream);
+                            cufftSetStream(dispersionFftBackward, pmeStream);
+                        }
                     }
                     CHECK_RESULT(cuEventCreate(&pmeSyncEvent, CU_EVENT_DISABLE_TIMING), "Error creating event for NonbondedForce");
+                    CHECK_RESULT(cuEventCreate(&paramsSyncEvent, CU_EVENT_DISABLE_TIMING), "Error creating event for NonbondedForce");
                     int recipForceGroup = force.getReciprocalSpaceForceGroup();
                     if (recipForceGroup < 0)
                         recipForceGroup = force.getForceGroup();
@@ -1904,7 +1931,7 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
 
                     // Evaluate the actual bspline moduli for X/Y/Z.
 
-                    for(int dim = 0; dim < 3; dim++) {
+                    for (int dim = 0; dim < 3; dim++) {
                         int ndata = (dim == 0 ? xsize : dim == 1 ? ysize : zsize);
                         vector<double> moduli(ndata);
                         for (int i = 0; i < ndata; i++) {
@@ -1932,6 +1959,37 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
         }
     }
 
+    // Add code to subtract off the reciprocal part of excluded interactions.
+
+    if ((nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME) && pmeio == NULL) {
+        int numContexts = cu.getPlatformData().contexts.size();
+        int startIndex = cu.getContextIndex()*force.getNumExceptions()/numContexts;
+        int endIndex = (cu.getContextIndex()+1)*force.getNumExceptions()/numContexts;
+        int numExclusions = endIndex-startIndex;
+        if (numExclusions > 0) {
+            paramsDefines["HAS_EXCLUSIONS"] = "1";
+            vector<vector<int> > atoms(numExclusions, vector<int>(2));
+            exclusionAtoms.initialize<int2>(cu, numExclusions, "exclusionAtoms");
+            exclusionParams.initialize<float4>(cu, numExclusions, "exclusionParams");
+            vector<int2> exclusionAtomsVec(numExclusions);
+            for (int i = 0; i < numExclusions; i++) {
+                int j = i+startIndex;
+                exclusionAtomsVec[i] = make_int2(exclusions[j].first, exclusions[j].second);
+                atoms[i][0] = exclusions[j].first;
+                atoms[i][1] = exclusions[j].second;
+            }
+            exclusionAtoms.upload(exclusionAtomsVec);
+            map<string, string> replacements;
+            replacements["PARAMS"] = cu.getBondedUtilities().addArgument(exclusionParams.getDevicePointer(), "float4");
+            replacements["EWALD_ALPHA"] = cu.doubleToString(alpha);
+            replacements["TWO_OVER_SQRT_PI"] = cu.doubleToString(2.0/sqrt(M_PI));
+            replacements["DO_LJPME"] = doLJPME ? "1" : "0";
+            if (doLJPME)
+                replacements["EWALD_DISPERSION_ALPHA"] = cu.doubleToString(dispersionAlpha);
+            cu.getBondedUtilities().addInteraction(atoms, cu.replaceStrings(CudaKernelSources::pmeExclusions, replacements), force.getForceGroup());
+        }
+    }
+
     // Add the interaction to the default nonbonded kernel.
 
     string source = cu.replaceStrings(CudaKernelSources::coulombLennardJones, defines);
@@ -1942,7 +2000,6 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
     if (usePosqCharges) {
         replacements["CHARGE1"] = "posq1.w";
         replacements["CHARGE2"] = "posq2.w";
-        paramsDefines["USE_POSQ_CHARGES"] = "1";
     }
     else {
         replacements["CHARGE1"] = prefix+"charge1";
@@ -2016,7 +2073,7 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
         }
         else
             paramIndex = paramPos-paramNames.begin();
-        exceptionOffsetVec[exception].push_back(make_float4(charge, sigma, epsilon, paramIndex));
+        exceptionOffsetVec[exceptionIndex[exception]].push_back(make_float4(charge, sigma, epsilon, paramIndex));
     }
     paramValues.resize(paramNames.size(), 0.0);
     particleParamOffsets.initialize<float4>(cu, max(force.getNumParticleParameterOffsets(), 1), "particleParamOffsets");
@@ -2053,6 +2110,7 @@ void CudaCalcNonbondedForceKernel::initialize(const System& system, const Nonbon
     
     CUmodule module = cu.createModule(CudaKernelSources::nonbondedParameters, paramsDefines);
     computeParamsKernel = cu.getKernel(module, "computeParameters");
+    computeExclusionParamsKernel = cu.getKernel(module, "computeExclusionParameters");
     info = new ForceInfo(force);
     cu.addForce(info);
 }
@@ -2079,8 +2137,9 @@ double CudaCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeF
         vector<void*> paramsArgs = {&cu.getEnergyBuffer().getDevicePointer(), &computeSelfEnergy, &globalParams.getDevicePointer(), &numAtoms,
                 &baseParticleParams.getDevicePointer(), &cu.getPosq().getDevicePointer(), &charges.getDevicePointer(), &sigmaEpsilon.getDevicePointer(),
                 &particleParamOffsets.getDevicePointer(), &particleOffsetIndices.getDevicePointer()};
+        int numExceptions;
         if (exceptionParams.isInitialized()) {
-            int numExceptions = exceptionParams.getSize();
+            numExceptions = exceptionParams.getSize();
             paramsArgs.push_back(&numExceptions);
             paramsArgs.push_back(&baseExceptionParams.getDevicePointer());
             paramsArgs.push_back(&exceptionParams.getDevicePointer());
@@ -2088,11 +2147,18 @@ double CudaCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeF
             paramsArgs.push_back(&exceptionOffsetIndices.getDevicePointer());
         }
         cu.executeKernel(computeParamsKernel, &paramsArgs[0], cu.getPaddedNumAtoms());
-        if (usePmeStream) {
-            cuEventRecord(pmeSyncEvent, cu.getCurrentStream());
-            cuStreamWaitEvent(pmeStream, pmeSyncEvent, 0);
+        if (exclusionParams.isInitialized()) {
+            int numExclusions = exclusionParams.getSize();
+            vector<void*> exclusionParamsArgs = {&cu.getPosq().getDevicePointer(), &charges.getDevicePointer(), &sigmaEpsilon.getDevicePointer(),
+                    &numExclusions, &exclusionAtoms.getDevicePointer(), &exclusionParams.getDevicePointer()};
+            cu.executeKernel(computeExclusionParamsKernel, &exclusionParamsArgs[0], numExclusions);
         }
-        energy = 0.0; // The Ewald self energy was computed in the kernel.
+        if (usePmeStream) {
+            cuEventRecord(paramsSyncEvent, cu.getCurrentStream());
+            cuStreamWaitEvent(pmeStream, paramsSyncEvent, 0);
+        }
+        if (hasOffsets)
+            energy = 0.0; // The Ewald self energy was computed in the kernel.
         recomputeParams = false;
     }
     
@@ -2192,8 +2258,6 @@ double CudaCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeF
             cu.executeKernel(pmeInterpolateForceKernel, interpolateArgs, cu.getNumAtoms(), 128);
         }
 
-        // As written, we check only the Electrostatic grid pointer to get here.  We could separate them out, but for
-        // now we assume that LJPME can only be used if electrostatic PME is also active.
         if (doLJPME && hasLJ) {
             if (!hasCoulomb) {
                 void* gridIndexArgs[] = {&cu.getPosq().getDevicePointer(), &pmeAtomGridIndex.getDevicePointer(), cu.getPeriodicBoxSizePointer(),
@@ -2202,6 +2266,7 @@ double CudaCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeF
                 cu.executeKernel(pmeDispersionGridIndexKernel, gridIndexArgs, cu.getNumAtoms());
 
                 sort->sort(pmeAtomGridIndex);
+                cu.clearBuffer(pmeEnergyBuffer);
             }
 
             cu.clearBuffer(pmeGrid2);
@@ -2324,10 +2389,12 @@ void CudaCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context,
     
     ewaldSelfEnergy = 0.0;
     if (nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME) {
-        for (int i = 0; i < force.getNumParticles(); i++) {
-            ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
-            if (doLJPME)
-                ewaldSelfEnergy += baseParticleParamVec[i].z*pow(baseParticleParamVec[i].y*dispersionAlpha, 6)/3.0;
+        if (cu.getContextIndex() == 0) {
+            for (int i = 0; i < force.getNumParticles(); i++) {
+                ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
+                if (doLJPME)
+                    ewaldSelfEnergy += baseParticleParamVec[i].z*pow(baseParticleParamVec[i].y*dispersionAlpha, 6)/3.0;
+            }
         }
     }
     if (force.getUseDispersionCorrection() && cu.getContextIndex() == 0 && (nonbondedMethod == CutoffPeriodic || nonbondedMethod == Ewald || nonbondedMethod == PME))
@@ -4076,6 +4143,8 @@ double CudaCalcCustomGBForceKernel::execute(ContextImpl& context, bool includeFo
                     for (auto& buffer : d->getBuffers())
                         gradientChainRuleArgs.push_back(&buffer.getMemory());
             }
+            for (auto& function : tabulatedFunctions)
+                gradientChainRuleArgs.push_back(&function.getDevicePointer());
         }
     }
     if (globals.isInitialized()) {
@@ -6577,6 +6646,26 @@ void CudaCalcGayBerneForceKernel::sortAtoms() {
     exclusionStartIndex.upload(startIndexVec);
 }
 
+class CudaCalcCustomCVForceKernel::ForceInfo : public CudaForceInfo {
+public:
+    ForceInfo(CudaForceInfo& force) : force(force) {
+    }
+    bool areParticlesIdentical(int particle1, int particle2) {
+        return force.areParticlesIdentical(particle1, particle2);
+    }
+    int getNumParticleGroups() {
+        return force.getNumParticleGroups();
+    }
+    void getParticlesInGroup(int index, std::vector<int>& particles) {
+        force.getParticlesInGroup(index, particles);
+    }
+    bool areGroupsIdentical(int group1, int group2) {
+        return force.areGroupsIdentical(group1, group2);
+    }
+private:
+    CudaForceInfo& force;
+};
+
 class CudaCalcCustomCVForceKernel::ReorderListener : public CudaContext::ReorderListener {
 public:
     ReorderListener(CudaContext& cu, CudaArray& invAtomOrder) : cu(cu), invAtomOrder(invAtomOrder) {
@@ -6656,6 +6745,11 @@ void CudaCalcCustomCVForceKernel::initialize(const System& system, const CustomC
     copyStateKernel = cu.getKernel(module, "copyState");
     copyForcesKernel = cu.getKernel(module, "copyForces");
     addForcesKernel = cu.getKernel(module, "addForces");
+
+    // This context needs to respect all forces in the inner context when reordering atoms.
+
+    for (CudaForceInfo* info : cu2.getForceInfos())
+        cu.addForce(new ForceInfo(*info));
 }
 
 double CudaCalcCustomCVForceKernel::execute(ContextImpl& context, ContextImpl& innerContext, bool includeForces, bool includeEnergy) {

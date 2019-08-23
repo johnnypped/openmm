@@ -866,17 +866,28 @@ void ReferenceCalcNonbondedForceKernel::initialize(const System& system, const N
 
     // Identify which exceptions are 1-4 interactions.
 
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     numParticles = force.getNumParticles();
     exclusions.resize(numParticles);
     vector<int> nb14s;
+    map<int, int> nb14Index;
     for (int i = 0; i < force.getNumExceptions(); i++) {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
         exclusions[particle1].insert(particle2);
         exclusions[particle2].insert(particle1);
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end()) {
+            nb14Index[i] = nb14s.size();
             nb14s.push_back(i);
+        }
     }
 
     // Build the arrays.
@@ -908,7 +919,7 @@ void ReferenceCalcNonbondedForceKernel::initialize(const System& system, const N
         int exception;
         double charge, sigma, epsilon;
         force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
-        exceptionParamOffsets[make_pair(param, exception)] = {charge, sigma, epsilon};
+        exceptionParamOffsets[make_pair(param, nb14Index[exception])] = {charge, sigma, epsilon};
     }
     nonbondedMethod = CalcNonbondedForceKernel::NonbondedMethod(force.getNonbondedMethod());
     nonbondedCutoff = force.getCutoffDistance();

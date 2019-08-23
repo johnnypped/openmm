@@ -6,7 +6,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2008-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2008-2019 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -1566,15 +1566,26 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
 
     // Identify which exceptions are 1-4 interactions.
 
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     vector<pair<int, int> > exclusions;
     vector<int> exceptions;
+    map<int, int> exceptionIndex;
     for (int i = 0; i < force.getNumExceptions(); i++) {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
         exclusions.push_back(pair<int, int>(particle1, particle2));
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end()) {
+            exceptionIndex[i] = exceptions.size();
             exceptions.push_back(i);
+        }
     }
 
     // Initialize nonbonded interactions.
@@ -1594,6 +1605,16 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
         if (epsilon != 0.0)
             hasLJ = true;
     }
+    for (int i = 0; i < force.getNumParticleParameterOffsets(); i++) {
+        string param;
+        int particle;
+        double charge, sigma, epsilon;
+        force.getParticleParameterOffset(i, param, particle, charge, sigma, epsilon);
+        if (charge != 0.0)
+            hasCoulomb = true;
+        if (epsilon != 0.0)
+            hasLJ = true;
+    }
     for (auto exclusion : exclusions) {
         exclusionList[exclusion.first].push_back(exclusion.second);
         exclusionList[exclusion.second].push_back(exclusion.first);
@@ -1602,8 +1623,7 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
     bool useCutoff = (nonbondedMethod != NoCutoff);
     bool usePeriodic = (nonbondedMethod != NoCutoff && nonbondedMethod != CutoffNonPeriodic);
     doLJPME = (nonbondedMethod == LJPME && hasLJ);
-    if (hasCoulomb)
-        usePosqCharges = cl.requestPosqCharges();
+    usePosqCharges = hasCoulomb ? cl.requestPosqCharges() : false;
     map<string, string> defines;
     defines["HAS_COULOMB"] = (hasCoulomb ? "1" : "0");
     defines["HAS_LENNARD_JONES"] = (hasLJ ? "1" : "0");
@@ -1635,6 +1655,8 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
     hasOffsets = (force.getNumParticleParameterOffsets() > 0 || force.getNumExceptionParameterOffsets() > 0);
     if (hasOffsets)
         paramsDefines["HAS_OFFSETS"] = "1";
+    if (usePosqCharges)
+        paramsDefines["USE_POSQ_CHARGES"] = "1";
     if (nonbondedMethod == Ewald) {
         // Compute the Ewald parameters.
 
@@ -1647,7 +1669,7 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
             paramsDefines["INCLUDE_EWALD"] = "1";
             paramsDefines["EWALD_SELF_ENERGY_SCALE"] = cl.doubleToString(ONE_4PI_EPS0*alpha/sqrt(M_PI));
             for (int i = 0; i < numParticles; i++)
-                ewaldSelfEnergy += baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
+                ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
 
             // Create the reciprocal space kernels.
 
@@ -1833,7 +1855,7 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
 
                     // Evaluate the actual bspline moduli for X/Y/Z.
 
-                    for(int dim = 0; dim < 3; dim++) {
+                    for (int dim = 0; dim < 3; dim++) {
                         int ndata = (dim == 0 ? xsize : dim == 1 ? ysize : zsize);
                         vector<cl_double> moduli(ndata);
                         for (int i = 0; i < ndata; i++) {
@@ -1863,6 +1885,37 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
         }
     }
 
+    // Add code to subtract off the reciprocal part of excluded interactions.
+
+    if ((nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME) && pmeio == NULL) {
+        int numContexts = cl.getPlatformData().contexts.size();
+        int startIndex = cl.getContextIndex()*force.getNumExceptions()/numContexts;
+        int endIndex = (cl.getContextIndex()+1)*force.getNumExceptions()/numContexts;
+        int numExclusions = endIndex-startIndex;
+        if (numExclusions > 0) {
+            paramsDefines["HAS_EXCLUSIONS"] = "1";
+            vector<vector<int> > atoms(numExclusions, vector<int>(2));
+            exclusionAtoms.initialize<mm_int2>(cl, numExclusions, "exclusionAtoms");
+            exclusionParams.initialize<mm_float4>(cl, numExclusions, "exclusionParams");
+            vector<mm_int2> exclusionAtomsVec(numExclusions);
+            for (int i = 0; i < numExclusions; i++) {
+                int j = i+startIndex;
+                exclusionAtomsVec[i] = mm_int2(exclusions[j].first, exclusions[j].second);
+                atoms[i][0] = exclusions[j].first;
+                atoms[i][1] = exclusions[j].second;
+            }
+            exclusionAtoms.upload(exclusionAtomsVec);
+            map<string, string> replacements;
+            replacements["PARAMS"] = cl.getBondedUtilities().addArgument(exclusionParams.getDeviceBuffer(), "float4");
+            replacements["EWALD_ALPHA"] = cl.doubleToString(alpha);
+            replacements["TWO_OVER_SQRT_PI"] = cl.doubleToString(2.0/sqrt(M_PI));
+            replacements["DO_LJPME"] = doLJPME ? "1" : "0";
+            if (doLJPME)
+                replacements["EWALD_DISPERSION_ALPHA"] = cl.doubleToString(dispersionAlpha);
+            cl.getBondedUtilities().addInteraction(atoms, cl.replaceStrings(OpenCLKernelSources::pmeExclusions, replacements), force.getForceGroup());
+        }
+    }
+
     // Add the interaction to the default nonbonded kernel.
     
     string source = cl.replaceStrings(OpenCLKernelSources::coulombLennardJones, defines);
@@ -1873,7 +1926,6 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
     if (usePosqCharges) {
         replacements["CHARGE1"] = "posq1.w";
         replacements["CHARGE2"] = "posq2.w";
-        paramsDefines["USE_POSQ_CHARGES"] = "1";
     }
     else {
         replacements["CHARGE1"] = prefix+"charge1";
@@ -1947,7 +1999,7 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
         }
         else
             paramIndex = paramPos-paramNames.begin();
-        exceptionOffsetVec[exception].push_back(mm_float4(charge, sigma, epsilon, paramIndex));
+        exceptionOffsetVec[exceptionIndex[exception]].push_back(mm_float4(charge, sigma, epsilon, paramIndex));
     }
     paramValues.resize(paramNames.size(), 0.0);
     particleParamOffsets.initialize<mm_float4>(cl, max(force.getNumParticleParameterOffsets(), 1), "particleParamOffsets");
@@ -1984,6 +2036,7 @@ void OpenCLCalcNonbondedForceKernel::initialize(const System& system, const Nonb
     
     cl::Program program = cl.createProgram(OpenCLKernelSources::nonbondedParameters, paramsDefines);
     computeParamsKernel = cl::Kernel(program, "computeParameters");
+    computeExclusionParamsKernel = cl::Kernel(program, "computeExclusionParameters");
     info = new ForceInfo(cl.getNonbondedUtilities().getNumForceBuffers(), force);
     cl.addForce(info);
 }
@@ -1992,21 +2045,31 @@ double OpenCLCalcNonbondedForceKernel::execute(ContextImpl& context, bool includ
     bool deviceIsCpu = (cl.getDevice().getInfo<CL_DEVICE_TYPE>() == CL_DEVICE_TYPE_CPU);
     if (!hasInitializedKernel) {
         hasInitializedKernel = true;
-        computeParamsKernel.setArg<cl::Buffer>(0, cl.getEnergyBuffer().getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(2, globalParams.getDeviceBuffer());
-        computeParamsKernel.setArg<cl_int>(3, cl.getPaddedNumAtoms());
-        computeParamsKernel.setArg<cl::Buffer>(4, baseParticleParams.getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(5, cl.getPosq().getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(6, charges.getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(7, sigmaEpsilon.getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(8, particleParamOffsets.getDeviceBuffer());
-        computeParamsKernel.setArg<cl::Buffer>(9, particleOffsetIndices.getDeviceBuffer());
+        int index = 0;
+        computeParamsKernel.setArg<cl::Buffer>(index++, cl.getEnergyBuffer().getDeviceBuffer());
+        index++;
+        computeParamsKernel.setArg<cl::Buffer>(index++, globalParams.getDeviceBuffer());
+        computeParamsKernel.setArg<cl_int>(index++, cl.getPaddedNumAtoms());
+        computeParamsKernel.setArg<cl::Buffer>(index++, baseParticleParams.getDeviceBuffer());
+        computeParamsKernel.setArg<cl::Buffer>(index++, cl.getPosq().getDeviceBuffer());
+        computeParamsKernel.setArg<cl::Buffer>(index++, charges.getDeviceBuffer());
+        computeParamsKernel.setArg<cl::Buffer>(index++, sigmaEpsilon.getDeviceBuffer());
+        computeParamsKernel.setArg<cl::Buffer>(index++, particleParamOffsets.getDeviceBuffer());
+        computeParamsKernel.setArg<cl::Buffer>(index++, particleOffsetIndices.getDeviceBuffer());
         if (exceptionParams.isInitialized()) {
-            computeParamsKernel.setArg<cl_int>(10, exceptionParams.getSize());
-            computeParamsKernel.setArg<cl::Buffer>(11, baseExceptionParams.getDeviceBuffer());
-            computeParamsKernel.setArg<cl::Buffer>(12, exceptionParams.getDeviceBuffer());
-            computeParamsKernel.setArg<cl::Buffer>(13, exceptionParamOffsets.getDeviceBuffer());
-            computeParamsKernel.setArg<cl::Buffer>(14, exceptionOffsetIndices.getDeviceBuffer());
+            computeParamsKernel.setArg<cl_int>(index++, exceptionParams.getSize());
+            computeParamsKernel.setArg<cl::Buffer>(index++, baseExceptionParams.getDeviceBuffer());
+            computeParamsKernel.setArg<cl::Buffer>(index++, exceptionParams.getDeviceBuffer());
+            computeParamsKernel.setArg<cl::Buffer>(index++, exceptionParamOffsets.getDeviceBuffer());
+            computeParamsKernel.setArg<cl::Buffer>(index++, exceptionOffsetIndices.getDeviceBuffer());
+        }
+        if (exclusionParams.isInitialized()) {
+            computeExclusionParamsKernel.setArg<cl::Buffer>(0, cl.getPosq().getDeviceBuffer());
+            computeExclusionParamsKernel.setArg<cl::Buffer>(1, charges.getDeviceBuffer());
+            computeExclusionParamsKernel.setArg<cl::Buffer>(2, sigmaEpsilon.getDeviceBuffer());
+            computeExclusionParamsKernel.setArg<cl_int>(3, exclusionParams.getSize());
+            computeExclusionParamsKernel.setArg<cl::Buffer>(4, exclusionAtoms.getDeviceBuffer());
+            computeExclusionParamsKernel.setArg<cl::Buffer>(5, exclusionParams.getDeviceBuffer());
         }
         if (cosSinSums.isInitialized()) {
             ewaldSumsKernel.setArg<cl::Buffer>(0, cl.getEnergyBuffer().getDeviceBuffer());
@@ -2156,12 +2219,15 @@ double OpenCLCalcNonbondedForceKernel::execute(ContextImpl& context, bool includ
     if (recomputeParams || hasOffsets) {
         computeParamsKernel.setArg<cl_int>(1, includeEnergy && includeReciprocal);
         cl.executeKernel(computeParamsKernel, cl.getPaddedNumAtoms());
+        if (exclusionParams.isInitialized())
+            cl.executeKernel(computeExclusionParamsKernel, exclusionParams.getSize());
         if (usePmeQueue) {
             vector<cl::Event> events(1);
             cl.getQueue().enqueueMarker(&events[0]);
             pmeQueue.enqueueWaitForEvents(events);
         }
-        energy = 0.0; // The Ewald self energy was computed in the kernel.
+        if (hasOffsets)
+            energy = 0.0; // The Ewald self energy was computed in the kernel.
         recomputeParams = false;
     }
     
@@ -2329,9 +2395,9 @@ double OpenCLCalcNonbondedForceKernel::execute(ContextImpl& context, bool includ
                 cl.executeKernel(pmeDispersionSpreadChargeKernel, 2*cl.getDevice().getInfo<CL_DEVICE_MAX_COMPUTE_UNITS>(), 1);
             }
             else {
-                if (!hasCoulomb)
-                    sort->sort(pmeAtomGridIndex);
                 if (cl.getSupports64BitGlobalAtomics()) {
+                    if (!hasCoulomb)
+                        sort->sort(pmeAtomGridIndex);
                     cl.clearBuffer(pmeGrid2);
                     setPeriodicBoxArgs(cl, pmeDispersionSpreadChargeKernel, 5);
                     if (cl.getUseDoublePrecision()) {
@@ -2348,6 +2414,7 @@ double OpenCLCalcNonbondedForceKernel::execute(ContextImpl& context, bool includ
                     cl.executeKernel(pmeDispersionFinishSpreadChargeKernel, gridSizeX*gridSizeY*gridSizeZ);
                 }
                 else {
+                    sort->sort(pmeAtomGridIndex);
                     cl.clearBuffer(pmeGrid1);
                     cl.executeKernel(pmeDispersionAtomRangeKernel, cl.getNumAtoms());
                     setPeriodicBoxSizeArg(cl, pmeDispersionZIndexKernel, 2);
@@ -2377,6 +2444,7 @@ double OpenCLCalcNonbondedForceKernel::execute(ContextImpl& context, bool includ
                 pmeDispersionEvalEnergyKernel.setArg<mm_float4>(6, recipBoxVectorsFloat[1]);
                 pmeDispersionEvalEnergyKernel.setArg<mm_float4>(7, recipBoxVectorsFloat[2]);
             }
+            if (!hasCoulomb) cl.clearBuffer(pmeEnergyBuffer);
             if (includeEnergy)
                 cl.executeKernel(pmeDispersionEvalEnergyKernel, gridSizeX*gridSizeY*gridSizeZ);
             cl.executeKernel(pmeDispersionConvolutionKernel, gridSizeX*gridSizeY*gridSizeZ);
@@ -2466,10 +2534,12 @@ void OpenCLCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& contex
     
     ewaldSelfEnergy = 0.0;
     if (nonbondedMethod == Ewald || nonbondedMethod == PME || nonbondedMethod == LJPME) {
-        for (int i = 0; i < force.getNumParticles(); i++) {
-            ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
-            if (doLJPME)
-                ewaldSelfEnergy += baseParticleParamVec[i].z*pow(baseParticleParamVec[i].y*dispersionAlpha, 6)/3.0;
+        if (cl.getContextIndex() == 0) {
+            for (int i = 0; i < force.getNumParticles(); i++) {
+                ewaldSelfEnergy -= baseParticleParamVec[i].x*baseParticleParamVec[i].x*ONE_4PI_EPS0*alpha/sqrt(M_PI);
+                if (doLJPME)
+                    ewaldSelfEnergy += baseParticleParamVec[i].z*pow(baseParticleParamVec[i].y*dispersionAlpha, 6)/3.0;
+            }
         }
     }
     if (force.getUseDispersionCorrection() && cl.getContextIndex() == 0 && (nonbondedMethod == CutoffPeriodic || nonbondedMethod == Ewald || nonbondedMethod == PME))
@@ -4344,6 +4414,8 @@ double OpenCLCalcCustomGBForceKernel::execute(ContextImpl& context, bool include
                     for (auto& buffer : d->getBuffers())
                         gradientChainRuleKernel.setArg<cl::Memory>(index++, buffer.getMemory());
             }
+            for (auto& function : tabulatedFunctions)
+                gradientChainRuleKernel.setArg<cl::Buffer>(index++, function.getDeviceBuffer());
         }
     }
     if (globals.isInitialized()) {
@@ -6853,6 +6925,26 @@ void OpenCLCalcGayBerneForceKernel::sortAtoms() {
     exclusionStartIndex.upload(startIndexVec);
 }
 
+class OpenCLCalcCustomCVForceKernel::ForceInfo : public OpenCLForceInfo {
+public:
+    ForceInfo(OpenCLForceInfo& force) : OpenCLForceInfo(0), force(force) {
+    }
+    bool areParticlesIdentical(int particle1, int particle2) {
+        return force.areParticlesIdentical(particle1, particle2);
+    }
+    int getNumParticleGroups() {
+        return force.getNumParticleGroups();
+    }
+    void getParticlesInGroup(int index, std::vector<int>& particles) {
+        force.getParticlesInGroup(index, particles);
+    }
+    bool areGroupsIdentical(int group1, int group2) {
+        return force.areGroupsIdentical(group1, group2);
+    }
+private:
+    OpenCLForceInfo& force;
+};
+
 class OpenCLCalcCustomCVForceKernel::ReorderListener : public OpenCLContext::ReorderListener {
 public:
     ReorderListener(OpenCLContext& cl, OpenCLArray& invAtomOrder) : cl(cl), invAtomOrder(invAtomOrder) {
@@ -6933,6 +7025,11 @@ void OpenCLCalcCustomCVForceKernel::initialize(const System& system, const Custo
     copyStateKernel = cl::Kernel(program, "copyState");
     copyForcesKernel = cl::Kernel(program, "copyForces");
     addForcesKernel = cl::Kernel(program, "addForces");
+
+    // This context needs to respect all forces in the inner context when reordering atoms.
+
+    for (OpenCLForceInfo* info : cl2.getForceInfos())
+        cl.addForce(new ForceInfo(*info));
 }
 
 double OpenCLCalcCustomCVForceKernel::execute(ContextImpl& context, ContextImpl& innerContext, bool includeForces, bool includeEnergy) {

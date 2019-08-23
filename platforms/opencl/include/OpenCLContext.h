@@ -9,7 +9,7 @@
  * Biological Structures at Stanford, funded under the NIH Roadmap for        *
  * Medical Research, grant U54 GM072970. See https://simtk.org.               *
  *                                                                            *
- * Portions copyright (c) 2009-2018 Stanford University and the Authors.      *
+ * Portions copyright (c) 2009-2019 Stanford University and the Authors.      *
  * Authors: Peter Eastman                                                     *
  * Contributors:                                                              *
  *                                                                            *
@@ -32,6 +32,18 @@
 #include <string>
 #define __CL_ENABLE_EXCEPTIONS
 #define CL_USE_DEPRECATED_OPENCL_1_1_APIS
+#ifndef CL_DEVICE_SIMD_PER_COMPUTE_UNIT_AMD
+  #define CL_DEVICE_SIMD_PER_COMPUTE_UNIT_AMD 0x4040
+#endif
+#ifndef CL_DEVICE_SIMD_WIDTH_AMD
+  #define CL_DEVICE_SIMD_WIDTH_AMD 0x4041
+#endif
+#ifndef CL_DEVICE_SIMD_INSTRUCTION_WIDTH_AMD
+  #define CL_DEVICE_SIMD_INSTRUCTION_WIDTH_AMD 0x4042
+#endif
+#ifndef CL_DEVICE_WAVEFRONT_WIDTH_AMD
+  #define CL_DEVICE_WAVEFRONT_WIDTH_AMD 0x4043
+#endif
 #ifdef _MSC_VER
     // Prevent Windows from defining macros that interfere with other code.
     #define NOMINMAX
@@ -172,9 +184,13 @@ public:
      */
     void initialize();
     /**
-     * Add an OpenCLForce to this context.
+     * Add an OpenCLForceInfo to this context.
      */
     void addForce(OpenCLForceInfo* force);
+    /**
+     * Get all OpenCLForceInfos that have been added to this context.
+     */
+    std::vector<OpenCLForceInfo*>& getForceInfos();
     /**
      * Get the cl::Context associated with this object.
      */

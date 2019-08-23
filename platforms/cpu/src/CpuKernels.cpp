@@ -490,21 +490,33 @@ CpuCalcNonbondedForceKernel::~CpuCalcNonbondedForceKernel() {
 }
 
 void CpuCalcNonbondedForceKernel::initialize(const System& system, const NonbondedForce& force) {
-    posqIndex = data.requestPosqIndex();
+    chargePosqIndex = data.requestPosqIndex();
+    ljPosqIndex = data.requestPosqIndex();
 
     // Identify which exceptions are 1-4 interactions.
 
+    set<int> exceptionsWithOffsets;
+    for (int i = 0; i < force.getNumExceptionParameterOffsets(); i++) {
+        string param;
+        int exception;
+        double charge, sigma, epsilon;
+        force.getExceptionParameterOffset(i, param, exception, charge, sigma, epsilon);
+        exceptionsWithOffsets.insert(exception);
+    }
     numParticles = force.getNumParticles();
     exclusions.resize(numParticles);
     vector<int> nb14s;
+    map<int, int> nb14Index;
     for (int i = 0; i < force.getNumExceptions(); i++) {
         int particle1, particle2;
         double chargeProd, sigma, epsilon;
         force.getExceptionParameters(i, particle1, particle2, chargeProd, sigma, epsilon);
         exclusions[particle1].insert(particle2);
         exclusions[particle2].insert(particle1);
-        if (chargeProd != 0.0 || epsilon != 0.0)
+        if (chargeProd != 0.0 || epsilon != 0.0 || exceptionsWithOffsets.find(i) != exceptionsWithOffsets.end()) {
+            nb14Index[i] = nb14s.size();
             nb14s.push_back(i);
+        }
     }
 
     // Record the particle parameters.
@@ -564,7 +576,7 @@ void CpuCalcNonbondedForceKernel::initialize(const System& system, const Nonbond
         }
         else
             paramIndex = paramPos-paramNames.begin();
-        exceptionParamOffsets[exception].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
+        exceptionParamOffsets[nb14Index[exception]].push_back(make_tuple(charge, sigma, epsilon, paramIndex));
     }
     paramValues.resize(paramNames.size(), 0.0);
 
@@ -626,6 +638,7 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
 
             vector<string> kernelNames;
             kernelNames.push_back("CalcPmeReciprocalForce");
+            kernelNames.push_back("CalcDispersionPmeReciprocalForce");
             useOptimizedPme = getPlatform().supportsKernels(kernelNames);
             if (useOptimizedPme) {
                 optimizedPme = getPlatform().createKernel(CalcPmeReciprocalForceKernel::Name(), context);
@@ -637,7 +650,7 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
         }
     }
     computeParameters(context, true);
-    copyChargesToPosq(context, charges, posqIndex);
+    copyChargesToPosq(context, charges, chargePosqIndex);
     AlignedArray<float>& posq = data.posq;
     vector<Vec3>& posData = extractPositions(context);
     vector<Vec3>& forceData = extractForces(context);
@@ -674,6 +687,11 @@ double CpuCalcNonbondedForceKernel::execute(ContextImpl& context, bool includeFo
             Vec3 periodicBoxVectors[3] = {boxVectors[0], boxVectors[1], boxVectors[2]};
             optimizedPme.getAs<CalcPmeReciprocalForceKernel>().beginComputation(io, periodicBoxVectors, includeEnergy);
             nonbondedEnergy += optimizedPme.getAs<CalcPmeReciprocalForceKernel>().finishComputation(io);
+            if (nonbondedMethod == LJPME) {
+                copyChargesToPosq(context, C6params, ljPosqIndex);
+                optimizedDispersionPme.getAs<CalcDispersionPmeReciprocalForceKernel>().beginComputation(io, periodicBoxVectors, includeEnergy);
+                nonbondedEnergy += optimizedDispersionPme.getAs<CalcDispersionPmeReciprocalForceKernel>().finishComputation(io);
+            }
         }
         else
             nonbonded->calculateReciprocalIxn(numParticles, &posq[0], posData, particleParams, C6params, exclusions, forceData, includeEnergy ? &nonbondedEnergy : NULL);
@@ -704,7 +722,6 @@ void CpuCalcNonbondedForceKernel::copyParametersToContext(ContextImpl& context, 
 
     // Record the values.
 
-    posqIndex = data.requestPosqIndex();
     for (int i = 0; i < numParticles; ++i)
        force.getParticleParameters(i, baseParticleParams[i][0], baseParticleParams[i][1], baseParticleParams[i][2]);
     for (int i = 0; i < num14; ++i) {
@@ -787,6 +804,8 @@ void CpuCalcNonbondedForceKernel::computeParameters(ContextImpl& context, bool o
         }
         else
             ewaldSelfEnergy = 0.0;
+        chargePosqIndex = data.requestPosqIndex();
+        ljPosqIndex = data.requestPosqIndex();
     }
 
     // Compute exception parameters.
