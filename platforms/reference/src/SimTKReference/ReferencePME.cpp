@@ -32,6 +32,8 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <complex.h>
+#include <complex>
 
 #include "ReferencePME.h"
 #include "fftpack.h"
@@ -40,11 +42,13 @@
 using std::vector;
 
 typedef int    ivec[3];
+typedef std::complex<double> d_complex;
 
 namespace OpenMM {
 
 struct pme
 {
+
     int          natoms;
     double       ewaldcoeff;
 
@@ -52,6 +56,12 @@ struct pme
                                         * Element (i,j,k) is accessed as:
                                         * grid[i*ngrid[1]*ngrid[2] + j*ngrid[2] + k]
                                         */
+
+    bool         compute_vext_grid;  // if computing vext_grid, initialize false
+    t_complex *  vext_grid;       //If we are computing electrostatic potential
+                                             // very similar data structure to grid 
+    d_complex *  bsplines_moduli_p[3];  /* used to calculation potential grid */
+
     int          ngrid[3];             /* Total grid dimensions (all data is complex!) */
     fftpack_t    fftplan;              /* Handle to fourier transform setup  */
 
@@ -87,6 +97,7 @@ struct pme
      */
 
     double       epsilon_r;             /* Dielectric coefficient to use, typically 1.0 */
+
 };
 
 
@@ -113,6 +124,13 @@ pme_calculate_bsplines_moduli(pme_t pme)
     {
         nmax = (pme->ngrid[d] > nmax) ? pme->ngrid[d] : nmax;
         pme->bsplines_moduli[d] = (double *) malloc(sizeof(double)*pme->ngrid[d]);
+     
+        /* if computing vext_grid, need to allocate this... */
+        if(pme->compute_vext_grid)
+        {
+            pme->bsplines_moduli_p[d] = (d_complex *) malloc(sizeof(d_complex)*pme->ngrid[d]); 
+        }
+
     }
 
     order = pme->order;
@@ -176,6 +194,24 @@ pme_calculate_bsplines_moduli(pme_t pme)
                 ss+=bsplines_data[j]*sin(arg);
             }
             pme->bsplines_moduli[d][i]=sc*sc+ss*ss;
+
+            // for vext_grid ..
+            if(pme->compute_vext_grid)
+            {
+                // avoid divide by zero if there is no weight from bspline
+                // set these grids to "1", as the zero weights will zero the FQgrid
+                d_complex denom = 1.0 + 1.0*I;
+                if(pme->bsplines_moduli[d][i]>1.0e-7){
+                    denom = sc + ss*I;
+                }
+                arg=(2.0*M_PI*i*(order-1))/ndata;          
+                pme->bsplines_moduli_p[d][i] = cos(arg) + sin(arg)*I;
+                pme->bsplines_moduli_p[d][i] /= denom;
+
+                // printf("%d  %d  %f  %f  %f  %f \n" , d , i , denom.real() , denom.imag() , pme->bsplines_moduli_p[d][i].real() , pme->bsplines_moduli_p[d][i].imag() ) ;
+
+            }
+            //
         }
         for (i=0;i<ndata;i++)
         {
@@ -192,8 +228,8 @@ pme_calculate_bsplines_moduli(pme_t pme)
     free(bsplines_data);
 }
 
-
-static void invert_box_vectors(const Vec3 boxVectors[3], Vec3 recipBoxVectors[3])
+/* JGM: changed to non-static, as i want to call externally */
+void invert_box_vectors(const Vec3 boxVectors[3], Vec3 recipBoxVectors[3])
 {
     double determinant = boxVectors[0][0]*boxVectors[1][1]*boxVectors[2][2];
     assert(determinant > 0);
@@ -428,6 +464,7 @@ pme_reciprocal_convolution(pme_t     pme,
     double maxkx,maxky,maxkz;
 
     t_complex *ptr;
+    t_complex *ptr_v;
 
     nx = pme->ngrid[0];
     ny = pme->ngrid[1];
@@ -448,6 +485,8 @@ pme_reciprocal_convolution(pme_t     pme,
     maxkx = (nx+1)/2;
     maxky = (ny+1)/2;
     maxkz = (nz+1)/2;
+
+    //if( pme->compute_vext_grid ){ printf(" computing vext_grid in convolution \n"); }
 
     for (kx=0;kx<nx;kx++)
     {
@@ -505,6 +544,25 @@ pme_reciprocal_convolution(pme_t     pme,
                 /* Long-range PME contribution to the energy for this frequency */
                 ets2      = eterm*struct2;
                 esum     += ets2;
+
+                /* If we are computing external potential ... */
+                if( pme->compute_vext_grid ){
+                    ptr_v       = pme->vext_grid + kx*ny*nz + ky*nz + kz;
+                    // very similar to filling of pme->grid, just without extra bspline factors ...
+                    // note bsplines_moduli and bsplines_moduli_p are inverted relative to each other
+                    // don't forget boxfactor, which is in bx in eterm
+                    // might need the conjugate of bsplines here, depending on FFT definition ...
+                    d_complex v_term = d1 + d2*I;                  
+                    //d_complex b1_b2_b3 = std::conj(pme->bsplines_moduli_p[0][kx]*pme->bsplines_moduli_p[1][ky]*pme->bsplines_moduli_p[2][kz]);
+                    d_complex b1_b2_b3 = pme->bsplines_moduli_p[0][kx]*pme->bsplines_moduli_p[1][ky]*pme->bsplines_moduli_p[2][kz];
+                    v_term  *= one_4pi_eps*exp(-factor*m2)/m2/boxfactor * b1_b2_b3;
+
+                    //printf("%d %d %d %f %f %f %f %f %f \n" , kx , ky , kz , d1 , d2 , b1_b2_b3.real() , b1_b2_b3.imag() , v_term.real() , v_term.imag() ) ;
+
+                    ptr_v->re = v_term.real() ;
+                    ptr_v->im = v_term.imag() ;
+                }
+
             }
         }
     }
@@ -747,6 +805,9 @@ pme_init(pme_t *       ppme,
     /* Allocate charge grid storage */
     pme->grid        = (t_complex *)malloc(sizeof(t_complex)*ngrid[0]*ngrid[1]*ngrid[2]);
 
+    // no vext grid
+    pme->compute_vext_grid = false;
+
     fftpack_init_3d(&pme->fftplan,ngrid[0],ngrid[1],ngrid[2]);
 
     /* Setup bspline moduli (see Essman paper) */
@@ -757,6 +818,59 @@ pme_init(pme_t *       ppme,
     return 0;
 }
 
+
+/*  Overloaded init, call if we are computing vext grid */
+int
+pme_init(pme_t *       ppme,
+         double        ewaldcoeff,
+         int           natoms,
+         const int     ngrid[3],
+         int           pme_order,
+         double        epsilon_r,
+         bool          compute_vext_grid)
+{
+    pme_t pme;
+    int   d;
+
+    pme = (pme_t) malloc(sizeof(struct pme));
+
+    pme->order       = pme_order;
+    pme->epsilon_r   = epsilon_r;
+    pme->ewaldcoeff  = ewaldcoeff;
+    pme->natoms      = natoms;
+
+    for (d=0;d<3;d++)
+    {
+        pme->ngrid[d]            = ngrid[d];
+        pme->bsplines_theta[d]   = (double *)malloc(sizeof(double)*pme_order*natoms);
+        pme->bsplines_dtheta[d]  = (double *)malloc(sizeof(double)*pme_order*natoms);
+    }
+
+    pme->particlefraction = (rvec *)malloc(sizeof(rvec)*natoms);
+    pme->particleindex    = (ivec *)malloc(sizeof(ivec)*natoms);
+
+    /* Allocate charge grid storage */
+    pme->grid        = (t_complex *)malloc(sizeof(t_complex)*ngrid[0]*ngrid[1]*ngrid[2]);
+
+    if(compute_vext_grid)
+    {
+        pme->compute_vext_grid = compute_vext_grid ;
+
+        //printf("init: computing vext grid \n");
+
+        /* vext_grid and grid will be very similar after 3d-invfft, up to a factor of the bsplines, but i don't see how to avoid allocating a second data structure ... */
+        pme->vext_grid   = (t_complex *)malloc(sizeof(t_complex)*ngrid[0]*ngrid[1]*ngrid[2]);
+    }
+
+    fftpack_init_3d(&pme->fftplan,ngrid[0],ngrid[1],ngrid[2]);
+
+    /* Setup bspline moduli (see Essman paper) */
+    pme_calculate_bsplines_moduli(pme);
+
+    *ppme = pme;
+
+    return 0;
+}
 
 
 
@@ -797,6 +911,11 @@ int pme_exec(pme_t       pme,
 
     /* do 3d-invfft */
     fftpack_exec_3d(pme->fftplan,FFTPACK_BACKWARD,pme->grid,pme->grid);
+
+    /* if computing vext_grid, need another back transform .. */
+    if( pme->compute_vext_grid ){
+        fftpack_exec_3d(pme->fftplan,FFTPACK_BACKWARD,pme->vext_grid,pme->vext_grid);
+    }
 
     /* Get the particle forces from the grid and bsplines in the pme structure */
     pme_grid_interpolate_force(pme,recipBoxVectors,charges,forces);
@@ -848,6 +967,55 @@ int pme_exec_dpme(pme_t       pme,
     return 0;
 }
 
+/* this is called to access ngrid info outside pme module, which is necessary
+ * as pme structure is defined here and not in header file  */
+std::vector<int> pme_return_gridsize(pme_t    pme)
+{
+    std::vector<int> ngrid_output;
+    ngrid_output.push_back( pme->ngrid[0] );
+    ngrid_output.push_back( pme->ngrid[1] );
+    ngrid_output.push_back( pme->ngrid[2] );
+    return ngrid_output;
+}
+
+
+/*  This copies the real part of the vext_grid.  The imaginary part should be zero..put in bug-check for this? */
+
+int pme_copy_grid_real( pme_t pme, double* vext ) 
+{  
+    int total_size = pme->ngrid[0] * pme->ngrid[1] * pme->ngrid[2];
+    for(int index=0;index<total_size;index++)
+    {
+        vext[index] =  pme->vext_grid[index].re;  }
+
+/*
+    printf(" real, imaginary parts of vext within copy routine \n");
+    int nx = pme->ngrid[0];
+    int ny = pme->ngrid[1];
+    int nz = pme->ngrid[2];
+
+    for (int ix=0;ix<nx;ix++){
+        for (int iy=0;iy<ny;iy++){
+            for (int iz=0;iz<nz;iz++){
+                int index = ix*ny*nz + iy*nz + iz; 
+                printf("%d  %d  %d  %f  %f \n", ix , iy , iz , pme->vext_grid[index].re , pme->vext_grid[index].im );
+            }
+        }
+    }
+*/
+
+}
+
+/* copy the particleindex data */
+int pme_copy_particleindex( pme_t pme, ivec* particleindex )
+{  
+    for (int i=0;i<pme->natoms;i++)
+    {
+        for (int d=0;d<3;d++)
+        { particleindex[i][d] =  pme->particleindex[i][d]; }
+    }
+}
+
 
 int
 pme_destroy(pme_t    pme)
@@ -861,12 +1029,22 @@ pme_destroy(pme_t    pme)
         free(pme->bsplines_moduli[d]);
         free(pme->bsplines_theta[d]);
         free(pme->bsplines_dtheta[d]);
+
+        /* if we were computing vext_grid, need to free bsplines_moduli_p */
+        if(pme->compute_vext_grid){ free(pme->bsplines_moduli_p[d]); }
+        
     }
 
     free(pme->particlefraction);
     free(pme->particleindex);
 
     fftpack_destroy(pme->fftplan);
+
+    /* if we allocated vext_grid */
+    if(pme->compute_vext_grid)
+    {   free(pme->vext_grid) ;
+        //printf("deallocating memory for vext_grid ... \n");
+    }
 
     /* destroy structure itself */
     free(pme);

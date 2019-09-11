@@ -47,6 +47,9 @@ class ReferenceLJCoulombIxn {
       int numRx, numRy, numRz;
       int meshDim[3], dispersionMeshDim[3];
 
+      // need to move this conditional to the python layer, but set here for now for testing...//
+      bool compute_vext_grid=true;
+
       // parameter indices
 
       static const int SigIndex = 0;

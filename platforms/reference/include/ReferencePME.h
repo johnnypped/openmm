@@ -39,7 +39,7 @@
 namespace OpenMM {
 
 typedef double rvec[3];
-
+typedef int    ivec[3];
 
 typedef struct pme *
 pme_t;
@@ -65,6 +65,18 @@ pme_init(pme_t* ppme,
          const int ngrid[3],
          int pme_order,
          double epsilon_r);
+
+
+/*  Overloaded init, call if we are computing vext grid */
+int OPENMM_EXPORT
+pme_init(pme_t* ppme,
+         double ewaldcoeff,
+         int natoms,
+         const int ngrid[3],
+         int pme_order,
+         double epsilon_r,
+         bool compute_grid);
+
 
 /*
  * Evaluate reciprocal space PME energy and forces.
@@ -108,6 +120,32 @@ pme_exec_dpme(pme_t pme,
               double* energy);
 
 
+/* add interface to this function to call externally. Changed to non-static */
+void invert_box_vectors(const Vec3 boxVectors[3], Vec3 recipBoxVectors[3]);
+
+/**
+ * Return grid size from pme data structure
+ */
+std::vector<int> pme_return_gridsize(pme_t pme);
+
+
+/**
+ * copy real part of pme grid from pme data structure into input vext data structure
+ * This is used to store Fourier space electrostatic potential
+ * which is stored after calls within pme_exec
+ *     pme_reciprocal_convolution(pme,periodicBoxVectors,recipBoxVectors,energy);
+ *
+ *     fftpack_exec_3d(pme->fftplan,FFTPACK_BACKWARD,pme->grid,pme->grid);
+ *
+ */
+int OPENMM_EXPORT
+pme_copy_grid_real(pme_t pme,
+                   double* vext);
+
+/* copy particleindex data from pme */
+int OPENMM_EXPORT
+pme_copy_particleindex(pme_t pme,
+                       ivec* particleindex );
 
 
 /* Release all memory in pme structure */

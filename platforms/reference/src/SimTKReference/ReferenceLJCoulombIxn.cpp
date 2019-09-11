@@ -42,6 +42,8 @@ using std::set;
 using std::vector;
 using namespace OpenMM;
 
+typedef int    ivec[3];
+
 /**---------------------------------------------------------------------------------------
 
    ReferenceLJCoulombIxn constructor
@@ -203,11 +205,18 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     double totalRecipEnergy         = 0.0;
     double vdwEnergy                = 0.0;
 
+    // data structures for computing vext_grid, make sure to free these at return!
+    std::vector<int> ngrid;    // number of PME grid points
+    ivec* particleindex;       // atom grid indices
+    double*  vext_grid;        /* this stores external potential evaluated on PME grid */    
+
     // A couple of sanity checks for
     if(ljpme && useSwitch)
         throw OpenMMException("Switching cannot be used with LJPME");
     if(ljpme && !pme)
         throw OpenMMException("LJPME has been set, without PME being set");
+
+    printf("in ReferenceLJCoulombIxn\n");
 
     // **************************************************************************************
     // SELF ENERGY
@@ -236,7 +245,11 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     if (pme && includeReciprocal) {
         pme_t          pmedata; /* abstract handle for PME data */
 
-        pme_init(&pmedata,alphaEwald,numberOfAtoms,meshDim,5,1);
+        // if computing vext grid, call overloaded pme_init for this setup
+        if(compute_vext_grid)
+            { pme_init(&pmedata,alphaEwald,numberOfAtoms,meshDim,5,1,compute_vext_grid);}
+        else
+            { pme_init(&pmedata,alphaEwald,numberOfAtoms,meshDim,5,1);}
 
         vector<double> charges(numberOfAtoms);
         for (int i = 0; i < numberOfAtoms; i++)
@@ -245,6 +258,29 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
         if (totalEnergy)
             *totalEnergy += recipEnergy;
+
+        // Computing Vext grid.  We need to copy over several pme data structures and save
+        // locally before call to pme_destroy(pmedata)
+        if (compute_vext_grid)
+        {
+            // grid size
+            ngrid = pme_return_gridsize(pmedata);
+            int nx = ngrid[0];
+            int ny = ngrid[1];
+            int nz = ngrid[2];
+
+            // copy particle grid indices
+            particleindex = (ivec *) malloc(sizeof(ivec)*numberOfAtoms);
+            pme_copy_particleindex( pmedata, particleindex );
+
+            // save electrostatic potential on PME grid, before pme_destroy
+            // Allocate vext grid storage
+            vext_grid = (double *) malloc(sizeof(double)*nx*ny*nz);
+
+            // copy pme grid over to vext_grid.  After call of pme_exec, pme grid should by default store the external potential
+            pme_copy_grid_real( pmedata, vext_grid );
+        }
+
 
         pme_destroy(pmedata);
 
@@ -514,7 +550,143 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
     if (totalEnergy)
         *totalEnergy -= totalExclusionEnergy;
+
+
+    if (!compute_vext_grid)
+        return;
+
+
+    /* Computing Electrostatic Potential on PME grid, already have reciprocal space, now do real space ... */
+    // pme grid stores electrostatic potential after calls to
+    //     pme_reciprocal_convolution(pme,periodicBoxVectors,recipBoxVectors,energy);
+    //     fftpack_exec_3d(pme->fftplan,FFTPACK_BACKWARD,pme->grid,pme->grid);
+
+    int nx = ngrid[0];
+    int ny = ngrid[1];
+    int nz = ngrid[2];
+
+    // print pme data that's been copied over ..
+    printf("PME grid size  %d %d %d \n",  nx , ny , nz  );
+    /*printf("PME particle grid indices\n");
+    for (int i = 0; i < numberOfAtoms; i++)
+        printf("%d  %d  %d \n", particleindex[i][0] , particleindex[i][1] , particleindex[i][2] );
+    */
+  
+  
+    printf("reciprocal space external potential on grid\n");
+    for (int i = 0; i < nx; i++){
+        for (int j = 0; j < ny; j++){
+            for (int k = 0; k < nz; k++){
+                int index = i*ny*nz + j*nz + k;
+                printf("%d %d %d  %f \n" , i , j , k , vext_grid[index] );
+            }
+        }
+    }
+    
+
+    // get reciprocal box vectors
+    Vec3 recipBoxVectors[3];
+    invert_box_vectors(periodicBoxVectors , recipBoxVectors);
+    // maximum grid displacements corresponding to realspace cutoff distance
+    int dgrid[3];
+    for (int i =0; i < 3; i++){
+        double recip_norm = sqrt( recipBoxVectors[0][i]*recipBoxVectors[0][i] + recipBoxVectors[1][i]*recipBoxVectors[1][i] + recipBoxVectors[2][i]*recipBoxVectors[2][i]);
+        dgrid[i] = floor( cutoffDistance*recip_norm*ngrid[i] ) + 1;
+    }
+
+    printf(" alpha Ewald setting %f \n" , alphaEwald );
+    printf(" real space cutoff %f \n" , cutoffDistance );
+    printf(" dgrid real space %d  %d  %d \n", dgrid[0] , dgrid[1] , dgrid[2] );
+
+    // currently this will only work for orthorhombic box, see minimum image function
+    // ReferenceForce::getDeltaRPeriodic(const Vec3& atomCoordinatesI, const Vec3& atomCoordinatesJ,
+    //                                const Vec3* boxVectors) {
+    // Need to use a PBC function for non-orthogonal boxes.
+    // Also, if atomic coordinates have been converted to rectangular cell from non-rectangular cell,
+    // this could be problem that should be checked...
+    printf(" **************************** Important Note ************************ \n" );
+    printf("   currently, vext grid calculation is only implemented for orthorhombic cell \n");
+    printf("   need to change source if using non-orthorhombic simulation box  !! \n"); 
+
+
+    // compute real-space contribution to vext grid, and add to previously stored reciprocal space contribution.
+    for (int i = 0; (i < numberOfAtoms); i++) {
+        double q_i = atomParameters[i][QIndex];
+        Vec3 r_i = atomCoordinates[i];
+
+        // nearest PME grid point of atom
+        int ix = particleindex[i][0];
+        int iy = particleindex[i][1];
+        int iz = particleindex[i][2];
+
+        int igrid[3];
+        // fill in contribution to vext to all grid points within realspace cutoff of this atom
+        for (int ia = -dgrid[0]; ia < dgrid[0] + 1; ia++){
+            for (int ib = -dgrid[1]; ib < dgrid[1] + 1; ib++){
+                for (int ic = -dgrid[2]; ic < dgrid[2] + 1; ic++){
+                    igrid[0] = ix + ia;
+                    igrid[1] = iy + ib;
+                    igrid[2] = iz + ic;               
+                    // get real space distance from atom to this grid point
+                    Vec3 r_grid;
+                    r_grid[0]=0.0;
+                    r_grid[1]=0.0;
+                    r_grid[2]=0.0;
+  
+
+                  for(int j=0; j<3; j++)
+                    {   for(int k=0; k<3; k++)
+                           { r_grid[k]+= (double)igrid[j] / ngrid[j] * periodicBoxVectors[j][k] ; }
+                    }
+                    // minimum image, see comments above about orthrhombic box limitation
+                    Vec3 dr = ReferenceForce::getDeltaRPeriodic( r_grid , r_i , periodicBoxVectors ); 
+                    double inverseR = 1.0 / sqrt(dr.dot(dr));
+
+                    // conditionals are slow, see trick in ReferencePME.cpp if we want to speed this up ...
+                    if (igrid[0] < 0 ){ igrid[0] += ngrid[0]; }
+                    if (igrid[1] < 0 ){ igrid[1] += ngrid[1]; }
+                    if (igrid[2] < 0 ){ igrid[2] += ngrid[2]; } 
+                    if (igrid[0] >= ngrid[0] ){ igrid[0] -= ngrid[0]; }
+                    if (igrid[1] >= ngrid[1] ){ igrid[1] -= ngrid[1]; }
+                    if (igrid[2] >= ngrid[2] ){ igrid[2] -= ngrid[2]; }
+
+
+                    int index = igrid[0]*ngrid[1]*ngrid[2] + igrid[1]*ngrid[2] + igrid[2];
+                    double alphaR = alphaEwald / inverseR ;  // just alpha * r 
+
+                    // add contribution to vext
+                    vext_grid[index] += ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
+
+                     /*
+                     double fac = ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
+                     printf( " %d %d %d %d %d %d %d %f %f %f \n" , i , ix , iy , iz , igrid[0] , igrid[1] , igrid[2] , alphaR , inverseR , fac );
+                     printf( " %f %f %f %f %f %f \n", r_grid[0] , r_grid[1] , r_grid[2] , dr[0] , dr[1] , dr[2] ) ;
+                     */
+                }
+            }
+        }
+
+    }
+
+
+    printf("real space plus reciprocal space external potential on grid\n");
+    for (int i = 0; i < nx; i++){
+        for (int j = 0; j < ny; j++){
+            for (int k = 0; k < nz; k++){
+                int index = i*ny*nz + j*nz + k;
+                printf("%d %d %d  %f \n" , i , j , k , vext_grid[index] );
+            }
+        }
+    }
+
+
+
+    /*   Free allocated memory from copied PME data structures */
+    free(particleindex);
+    free(vext_grid);
+
 }
+
 
 
 /**---------------------------------------------------------------------------------------
