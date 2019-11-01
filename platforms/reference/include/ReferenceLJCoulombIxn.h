@@ -47,9 +47,6 @@ class ReferenceLJCoulombIxn {
       int numRx, numRy, numRz;
       int meshDim[3], dispersionMeshDim[3];
 
-      // need to move this conditional to the python layer, but set here for now for testing...//
-      bool compute_vext_grid=true;
-
       // parameter indices
 
       static const int SigIndex = 0;
@@ -180,7 +177,8 @@ class ReferenceLJCoulombIxn {
           
       void calculatePairIxn(int numberOfAtoms, std::vector<OpenMM::Vec3>& atomCoordinates,
                             std::vector<std::vector<double> >& atomParameters, std::vector<std::set<int> >& exclusions,
-                            std::vector<OpenMM::Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal) const;
+                            std::vector<OpenMM::Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal,
+                            double* vext_grid, const std::vector<int>& QMexclude, std::vector<OpenMM::Vec3>& PME_grid_positions ) const;
 
 private:
       /**---------------------------------------------------------------------------------------
@@ -201,7 +199,8 @@ private:
           
       void calculateEwaldIxn(int numberOfAtoms, std::vector<OpenMM::Vec3>& atomCoordinates,
                              std::vector<std::vector<double> >& atomParameters, std::vector<std::set<int> >& exclusions,
-                             std::vector<OpenMM::Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal) const;
+                             std::vector<OpenMM::Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal,
+                             double* vext_grid , const std::vector<int>& QMexclude, std::vector<OpenMM::Vec3>& PME_grid_positions ) const;
 };
 
 } // namespace OpenMM

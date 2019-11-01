@@ -102,6 +102,10 @@ void SystemProxy::serialize(const void* object, SerializationNode& node) const {
     SerializationNode& forces = node.createChildNode("Forces");
     for (int i = 0; i < system.getNumForces(); i++)
         forces.createChildNode("Force", &system.getForce(i));
+
+    SerializationNode& QMexclude = node.createChildNode("QMexclude");
+    for (int i = 0; i < system.getNumQMexclude(); i++)
+        QMexclude.createChildNode("atomindex").setIntProperty("index", system.getQMexclude(i));
 }
 
 void* SystemProxy::deserialize(const SerializationNode& node) const {
@@ -153,6 +157,10 @@ void* SystemProxy::deserialize(const SerializationNode& node) const {
         const SerializationNode& forces = node.getChildNode("Forces");
         for (auto& force : forces.getChildren())
             system->addForce(force.decodeObject<Force>());
+
+        const SerializationNode& QMexclude = node.getChildNode("QMexclude"); 
+        for (auto& atomindex : QMexclude.getChildren())
+            system->addQMexclude(atomindex.getIntProperty("index"));
     }
     catch (...) {
         delete system;

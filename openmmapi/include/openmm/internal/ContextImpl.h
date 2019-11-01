@@ -120,10 +120,23 @@ public:
      * @param forces  on exit, this contains the forces
      */
     void getForces(std::vector<Vec3>& forces);
+     /**
+     * Get the external potential grid for QM/MM
+     *      
+     * @param vext_grid  on exit, this contains the external potential
+     */
+    void getVext_grid(std::vector<double>& vext_grid);
+    /**
+     * Get the positions of the PME grid
+     *
+     * @param PME_grid_positions  on exit, this contains the PME grid positions
+     */
+    void getPME_grid_positions(std::vector<Vec3>& PME_grid_positions);
     /**
      * Get the set of all adjustable parameters and their values
      */
-    const std::map<std::string, double>& getParameters() const;
+  
+  const std::map<std::string, double>& getParameters() const;
     /**
      * Get the value of an adjustable parameter.  If there is no parameter with the specified name, this
      * throws an exception.

@@ -1149,6 +1149,7 @@ class ForceField(object):
         # Create the System and add atoms
 
         sys = mm.System()
+
         for atom in topology.atoms():
             # Look up the atom type name, returning a helpful error message if it cannot be found.
             if atom not in data.atomType:
@@ -1303,6 +1304,13 @@ class ForceField(object):
 
         for script in self._scripts:
             exec(script, locals())
+
+        # If QM/MM, add tuple of QM atoms to system to exclude contribution to gridded external potential
+        #print( "QMatoms " , topology.QMatoms )
+        for index in topology.QMatoms :
+            sys.addQMexclude( index )
+            #print("index " , index )
+
         return sys
 
 

@@ -153,6 +153,16 @@ public:
      */
     void getVelocities(ContextImpl& context, std::vector<Vec3>& velocities);
     /**
+     * Get the external potential computed on the PME grid
+     *
+     * @param vext_grid  on exit, this contains the external potential
+     */
+    void getVext_grid(ContextImpl& context, std::vector<double>& vext_grid);
+
+    /* get the positions of the PME grid           */
+    virtual void getPME_grid_positions(ContextImpl& context, std::vector<Vec3>& PME_grid_positions);
+
+    /**
      * Set the velocities of all particles.
      *
      * @param velocities  a vector containg the particle velocities

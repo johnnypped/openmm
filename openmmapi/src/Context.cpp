@@ -96,7 +96,10 @@ State Context::getState(int types, bool enforcePeriodicBox, int groups) const {
     bool includeForces = types&State::Forces;
     bool includeEnergy = types&State::Energy;
     bool includeParameterDerivs = types&State::ParameterDerivatives;
-    if (includeForces || includeEnergy || includeParameterDerivs) {
+    bool includeVext_grid = types&State::Vext_grids;
+    bool includePME_grid_positions = types&State::PME_Grid_Positions;
+
+    if (includeForces || includeEnergy || includeParameterDerivs || includeVext_grid ) {
         double energy = impl->calcForcesAndEnergy(includeForces || includeEnergy || includeParameterDerivs, includeEnergy, groups);
         if (includeEnergy)
             builder.setEnergy(impl->calcKineticEnergy(), energy);
@@ -104,6 +107,17 @@ State Context::getState(int types, bool enforcePeriodicBox, int groups) const {
             vector<Vec3> forces;
             impl->getForces(forces);
             builder.setForces(forces);
+        }
+        // Vext_grid for QM/MM
+        if (includeVext_grid) {
+            vector<double> vext_grid;
+            impl->getVext_grid(vext_grid);
+            builder.setVext_grid(vext_grid);
+        }
+        if (includePME_grid_positions) {
+            vector<Vec3> PME_grid_positions;
+            impl->getPME_grid_positions(PME_grid_positions);
+            builder.setPME_grid_positions(PME_grid_positions);
         }
     }
     if (types&State::Parameters) {

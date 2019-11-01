@@ -99,6 +99,33 @@ static vector<Vec3>& extractVelocities(ContextImpl& context) {
     return *((vector<Vec3>*) data->velocities);
 }
 
+bool extractReferenceVextGrid(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    ReferencePlatform& platform = reinterpret_cast<ReferencePlatform&>(context.getPlatform());
+    std::map<std::string, std::string>& properties = data->propertyValues;
+  
+    string ReferenceVextGridValue = (properties.find(platform.ReferenceVextGrid()) == properties.end() ?
+            platform.getPropertyDefaultValue(platform.ReferenceVextGrid()) : properties.find(platform.ReferenceVextGrid())->second);
+    transform(ReferenceVextGridValue.begin(), ReferenceVextGridValue.end(), ReferenceVextGridValue.begin(), ::tolower);
+    return (ReferenceVextGridValue == "true");
+}
+
+
+static double* extractVext_grid(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return data->vext_grid;
+}
+
+static vector<Vec3>& extractPME_grid_positions(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return *((vector<Vec3>*) data->PME_grid_positions);
+}
+
+const vector<int>& extractQMexclude(ContextImpl& context) {
+    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    return data->QMexclude;
+}
+
 static vector<Vec3>& extractForces(ContextImpl& context) {
     ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
     return *((vector<Vec3>*) data->forces);
@@ -227,6 +254,7 @@ void ReferenceUpdateStateDataKernel::setPositions(ContextImpl& context, const st
     }
 }
 
+
 void ReferenceUpdateStateDataKernel::getVelocities(ContextImpl& context, std::vector<Vec3>& velocities) {
     int numParticles = context.getSystem().getNumParticles();
     vector<Vec3>& velData = extractVelocities(context);
@@ -243,6 +271,22 @@ void ReferenceUpdateStateDataKernel::setVelocities(ContextImpl& context, const s
         velData[i][1] = velocities[i][1];
         velData[i][2] = velocities[i][2];
     }
+}
+
+void ReferenceUpdateStateDataKernel::getPME_grid_positions(ContextImpl& context, std::vector<Vec3>& PME_grid_positions) {
+    vector<Vec3>& PME_grid_positionsData = extractPME_grid_positions(context);
+    // input vector PME_grid_positions has not been assigned memory...
+    PME_grid_positions.resize(PME_grid_positionsData.size());
+    for (int i = 0; i < PME_grid_positionsData.size(); ++i)
+        PME_grid_positions[i] = Vec3(PME_grid_positionsData[i][0], PME_grid_positionsData[i][1], PME_grid_positionsData[i][2]);
+}
+
+void ReferenceUpdateStateDataKernel::getVext_grid(ContextImpl& context, std::vector<double>& vext_grid) {
+    double* vext_gridData = extractVext_grid(context);
+    // Shouldn't really extract PME_grid_positions, but need size of array... maybe can improve this...
+    vector<Vec3>& PME_grid_positionsData = extractPME_grid_positions(context);
+    for (int i = 0; i < PME_grid_positionsData.size(); ++i)
+        vext_grid.push_back(vext_gridData[i]);
 }
 
 void ReferenceUpdateStateDataKernel::getForces(ContextImpl& context, std::vector<Vec3>& forces) {
@@ -961,6 +1005,13 @@ double ReferenceCalcNonbondedForceKernel::execute(ContextImpl& context, bool inc
     computeParameters(context);
     vector<Vec3>& posData = extractPositions(context);
     vector<Vec3>& forceData = extractForces(context);
+
+    // if computing vext_grid   
+    bool ReferenceVextGrid = extractReferenceVextGrid(context);     
+    vector<Vec3>& PME_grid_positions = extractPME_grid_positions(context);
+
+    const vector<int>& QMexclude = extractQMexclude(context);
+
     double energy = 0;
     ReferenceLJCoulombIxn clj;
     bool periodic = (nonbondedMethod == CutoffPeriodic);
@@ -988,7 +1039,8 @@ double ReferenceCalcNonbondedForceKernel::execute(ContextImpl& context, bool inc
     }
     if (useSwitchingFunction)
         clj.setUseSwitchingFunction(switchingDistance);
-    clj.calculatePairIxn(numParticles, posData, particleParamArray, exclusions, forceData, includeEnergy ? &energy : NULL, includeDirect, includeReciprocal);
+    // added extra QMexclude argument to this function, not the best way to do i/o...improve in future?
+    clj.calculatePairIxn(numParticles, posData, particleParamArray, exclusions, forceData, includeEnergy ? &energy : NULL, includeDirect, includeReciprocal, ReferenceVextGrid ? extractVext_grid(context) : NULL , QMexclude , PME_grid_positions );
     if (includeDirect) {
         ReferenceBondForce refBondForce;
         ReferenceLJCoulomb14 nonbonded14;

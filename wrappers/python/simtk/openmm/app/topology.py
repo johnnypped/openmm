@@ -88,6 +88,8 @@ class Topology(object):
         self._numAtoms = 0
         self._bonds = []
         self._periodicBoxVectors = None
+        """ initialize empty tuple for potentially storing QMatoms """
+        self.QMatoms=()
 
     def __repr__(self):
         nchains = len(self._chains)
@@ -211,6 +213,21 @@ class Topology(object):
             The bond order, or None if it is not specified
         """
         self._bonds.append(Bond(atom1, atom2, type, order))
+
+    def addQMatoms(self, QMatoms):
+        """ add a tuple containing indices of QM atoms to the Topology.
+
+        Parameters
+        ----------
+        QMatoms
+            Tuple containing QMatoms for QM/MM calculation.
+            These atoms will be excluded when computing external potential
+            On QM region
+
+        """
+        self.QMatoms=self.QMatoms + QMatoms
+        return 1
+
 
     def chains(self):
         """Iterate over all Chains in the Topology."""

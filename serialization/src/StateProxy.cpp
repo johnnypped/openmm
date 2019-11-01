@@ -89,6 +89,23 @@ void StateProxy::serialize(const void* object, SerializationNode& node) const {
             forcesNode.createChildNode("Force").setDoubleProperty("x", stateForces[i][0]).setDoubleProperty("y", stateForces[i][1]).setDoubleProperty("z", stateForces[i][2]);
         }
     }
+    if ((s.getDataTypes()&State::Vext_grids) != 0) {
+        s.getVext_grid();
+        SerializationNode& Vext_gridNode = node.createChildNode("Vext_grids");
+        vector<double> stateVext_grid = s.getVext_grid();
+        for (int i=0; i<stateVext_grid.size();i++) {
+            Vext_gridNode.createChildNode("Vext_grid").setDoubleProperty("v", stateVext_grid[i]);
+        }
+    }
+    if ((s.getDataTypes()&State::PME_Grid_Positions) != 0) {
+        s.getPME_grid_positions();
+        SerializationNode& PME_gridNode = node.createChildNode("PME_grid_positions");
+        vector<Vec3> statePME_grid_pos = s.getPME_grid_positions();
+        for (int i=0; i<statePME_grid_pos.size();i++) {
+            PME_gridNode.createChildNode("PME_grid_pos").setDoubleProperty("x", statePME_grid_pos[i][0]).setDoubleProperty("y", statePME_grid_pos[i][1]).setDoubleProperty("z", statePME_grid_pos[i][2]);
+        }
+    }
+
 }
 
 void* StateProxy::deserialize(const SerializationNode& node) const {
@@ -137,6 +154,20 @@ void* StateProxy::deserialize(const SerializationNode& node) const {
                 outForces.push_back(Vec3(particle.getDoubleProperty("x"),particle.getDoubleProperty("y"),particle.getDoubleProperty("z")));
             builder.setForces(outForces);
             arraySizes.push_back(outForces.size());
+        }
+        else if (child.getName() == "Vext_grids") {
+            vector<double> outVext_grids;
+            for (auto& particle : child.getChildren())
+                outVext_grids.push_back(particle.getDoubleProperty("v"));
+            builder.setVext_grid(outVext_grids);
+            arraySizes.push_back(outVext_grids.size());
+        }
+        else if (child.getName() == "PME_grid_positions") {
+            vector<Vec3> outPME_grid_pos;
+            for (auto& particle : child.getChildren())
+                outPME_grid_pos.push_back(Vec3(particle.getDoubleProperty("x"),particle.getDoubleProperty("y"),particle.getDoubleProperty("z")));
+            builder.setPME_grid_positions(outPME_grid_pos);
+            arraySizes.push_back(outPME_grid_pos.size());
         }
     }
     for (int i = 1; i < arraySizes.size(); i++) {

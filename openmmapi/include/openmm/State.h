@@ -58,7 +58,7 @@ public:
      * This is an enumeration of the types of data which may be stored in a State.  When you create
      * a State, use these values to specify which data types it should contain.
      */
-    enum DataType {Positions=1, Velocities=2, Forces=4, Energy=8, Parameters=16, ParameterDerivatives=32};
+    enum DataType {Positions=1, Velocities=2, Forces=4, Energy=8, Parameters=16, ParameterDerivatives=32, Vext_grids=64, PME_Grid_Positions=128};
     /**
      * Construct an empty State containing no data.  This exists so State objects can be used in STL containers.
      */
@@ -79,6 +79,14 @@ public:
      * Get the force acting on each particle.  If this State does not contain forces, this will throw an exception.
      */
     const std::vector<Vec3>& getForces() const;
+    /**
+     * Get the external potential calculated on the PME grid.  If this State does not contain vext_grid, this will throw an exception.
+     */
+    const std::vector<double>& getVext_grid() const;
+    /**
+     * Get the PME grid positions.  If this State does not contain PME grid positions, this will throw an exception.
+     */
+    const std::vector<Vec3>& getPME_grid_positions() const;
     /**
      * Get the total kinetic energy of the system.  If this State does not contain energies, this will throw an exception.
      *
@@ -128,6 +136,8 @@ private:
     void setPositions(const std::vector<Vec3>& pos);
     void setVelocities(const std::vector<Vec3>& vel);
     void setForces(const std::vector<Vec3>& force);
+    void setVext_grid(const std::vector<double>& vext_grid);
+    void setPME_grid_positions(const std::vector<Vec3>& PME_grid_positions);
     void setParameters(const std::map<std::string, double>& params);
     void setEnergyParameterDerivatives(const std::map<std::string, double>& derivs);
     void setEnergy(double ke, double pe);
@@ -137,6 +147,8 @@ private:
     std::vector<Vec3> positions;
     std::vector<Vec3> velocities;
     std::vector<Vec3> forces;
+    std::vector<double> vext_grid;
+    std::vector<Vec3> PME_grid_positions;
     Vec3 periodicBoxVectors[3];
     std::map<std::string, double> parameters, energyParameterDerivatives;
 };
@@ -153,6 +165,8 @@ public:
     void setPositions(const std::vector<Vec3>& pos);
     void setVelocities(const std::vector<Vec3>& vel);
     void setForces(const std::vector<Vec3>& force);
+    void setVext_grid(const std::vector<double>& vext_grid);
+    void setPME_grid_positions(const std::vector<Vec3>& PME_grid_positions);
     void setParameters(const std::map<std::string, double>& params);
     void setEnergyParameterDerivatives(const std::map<std::string, double>& params);
     void setEnergy(double ke, double pe);

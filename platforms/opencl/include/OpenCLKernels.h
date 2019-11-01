@@ -142,6 +142,16 @@ public:
      * @param forces  on exit, this contains the forces
      */
     void getForces(ContextImpl& context, std::vector<Vec3>& forces);
+
+    /****************** Stop program if calling these methods, only implemented for reference Platform */
+    void getVext_grid(ContextImpl& context, std::vector<double>& vext_grid){
+        throw OpenMMException("can only call getVext_grid with reference Platform!");
+    }
+    virtual void getPME_grid_positions(ContextImpl& context, std::vector<Vec3>& PME_grid_positions){
+        throw OpenMMException("can only call getPME_grid_positions with reference Platform!");
+    }
+    /***********************************************************************************************/
+
     /**
      * Get the current derivatives of the energy with respect to context parameters.
      *

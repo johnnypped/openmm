@@ -176,6 +176,19 @@ public:
      */
     virtual void getForces(ContextImpl& context, std::vector<Vec3>& forces) = 0;
     /**
+    * Get the external potential computed on the PME grid
+    *
+    * @param vext_grid  on exit, this contains the external potential
+    */
+
+//**********  Need to define getVext_grid and getPME_grid_positions in all the Platforms in order to interface here...
+//**********   for now, only defined in reference Platform , so interface in corresponding reference derived class instead of here
+    virtual void getVext_grid(ContextImpl& context, std::vector<double>& vext_grid) = 0;
+
+    /* get the positions of the PME grid           */
+    virtual void getPME_grid_positions(ContextImpl& context, std::vector<Vec3>& PME_grid_positions) = 0;    
+
+    /**
      * Get the current derivatives of the energy with respect to context parameters.
      *
      * @param derivs  on exit, this contains the derivatives

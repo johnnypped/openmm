@@ -238,6 +238,13 @@ void ContextImpl::setVelocities(const std::vector<Vec3>& velocities) {
 void ContextImpl::getForces(std::vector<Vec3>& forces) {
     updateStateDataKernel.getAs<UpdateStateDataKernel>().getForces(*this, forces);
 }
+void ContextImpl::getPME_grid_positions(std::vector<Vec3>& PME_grid_positions) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().getPME_grid_positions(*this, PME_grid_positions);
+}
+
+void ContextImpl::getVext_grid(std::vector<double>& vext_grid) {
+    updateStateDataKernel.getAs<UpdateStateDataKernel>().getVext_grid(*this, vext_grid);
+}
 
 const std::map<std::string, double>& ContextImpl::getParameters() const {
     return parameters;

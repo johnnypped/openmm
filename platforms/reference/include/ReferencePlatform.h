@@ -35,6 +35,7 @@
 #include "openmm/Platform.h"
 #include "openmm/System.h"
 #include "openmm/internal/windowsExport.h"
+#include <vector>
 
 namespace OpenMM {
 
@@ -54,11 +55,20 @@ public:
     bool supportsDoublePrecision() const;
     void contextCreated(ContextImpl& context, const std::map<std::string, std::string>& properties) const;
     void contextDestroyed(ContextImpl& context) const;
+
+     /* This is the name of the parameter for selecting whether to grid external potential.      */
+    static const std::string& ReferenceVextGrid() {
+        static const std::string key = "ReferenceVextGrid";
+        return key;
+    }
+
+
+
 };
 
 class OPENMM_EXPORT ReferencePlatform::PlatformData {
 public:
-    PlatformData(const System& system);
+    PlatformData(const System& system, bool ReferenceVextGrid);
     ~PlatformData();
     int numParticles, stepCount;
     double time;
@@ -69,6 +79,17 @@ public:
     void* periodicBoxVectors;
     void* constraints;
     void* energyParameterDerivatives;
+
+    std::map<std::string, std::string> propertyValues;
+
+    // QMatoms to exclude in vext_grid calculation
+    const std::vector<int>& QMexclude;  // does not own, owned by system
+
+    // this stores external potential evaluated on PME grid //
+    double* vext_grid;
+    // positions of PME grid points (for interpolation)
+    void* PME_grid_positions;
+
 };
 } // namespace OpenMM
 

@@ -61,6 +61,11 @@ void System::setParticleMass(int index, double mass) {
     masses[index] = mass;
 }
 
+
+const std::vector<int>& System::getQMexclude() const {
+    return QMexclude;
+}
+
 void System::setVirtualSite(int index, VirtualSite* virtualSite) {
     if (index >= (int) virtualSites.size())
         virtualSites.resize(getNumParticles(), NULL);

@@ -454,9 +454,13 @@ UNITS = {
 ("State", "getPeriodicBoxVectors") : ('unit.nanometers', ()),
 ("State", "getParameters") : (None, ()),
 ("State", "getEnergyParameterDerivatives") : (None, ()),
+ # probably should add units to vext_grid eventually ...
+("State", "getVext_grid") : (None, ()),
+("State", "getPME_grid_positions") : (None, ()), 
 ("System", "getConstraintParameters") : (None, (None, None, 'unit.nanometer')),
 ("System", "getForce") : (None, ()),
 ("System", "getVirtualSite") : (None, ()),
+("System", "getQMexclude") : (None, ()),
 ("DrudeLangevinIntegrator", "getDrudeTemperature") : ("unit.kelvin", ()),
 ("DrudeLangevinIntegrator", "getMaxDrudeDistance") : ("unit.nanometer", ()),
 ("MonteCarloMembraneBarostat", "getXYMode") : (None, ()),

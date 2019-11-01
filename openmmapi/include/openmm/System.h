@@ -109,14 +109,45 @@ public:
      */
     void setParticleMass(int index, double mass);
     /**
-     * Set a particle to be a virtual site.  The VirtualSite object should have
-     * been created on the heap with the "new" operator.  The System takes over
-     * ownership of it, and deletes it when the System itself is deleted.
-     *
-     * @param index        the index of the particle that should be treated as a
-     *                     virtual site
-     * @param virtualSite  a pointer to the VirtualSite object describing it
-     */
+    * Add a particle to the list of QMexclusions.  
+    * particles in this list will not contribute to
+    * the vext_grid external potential computed for a QM/MM calculation
+    *
+    * @param index   the index of the particle 
+    */
+    void addQMexclude(int index) {
+        QMexclude.push_back(index);
+    }
+    
+    /*  get/set QMexclude atoms 
+    *   this is used to store QMexclude atoms
+    *   within PlatformData structure
+    */
+    const std::vector<int>& getQMexclude() const;
+
+    /******************************************/
+    /*  this is used primarily in serializer */
+    /* don't wrap this with doxygen because of overloaded function */
+    ///@cond INTERNAL
+    int getNumQMexclude() const{
+        return QMexclude.size();
+    }
+
+    int getQMexclude( int index ) const{
+        return QMexclude[index];
+    }
+    ///@endcond
+    /***************************************/
+
+    /**
+    * Set a particle to be a virtual site.  The VirtualSite object should have
+    * been created on the heap with the "new" operator.  The System takes over
+    * ownership of it, and deletes it when the System itself is deleted.
+    *
+    * @param index        the index of the particle that should be treated as a
+    *                     virtual site
+    * @param virtualSite  a pointer to the VirtualSite object describing it
+    */
     void setVirtualSite(int index, VirtualSite* virtualSite);
     /**
      * Get whether a particle is a VirtualSite.
@@ -244,6 +275,8 @@ public:
      * @return true if at least one force uses PBC and false otherwise
      */
     bool usesPeriodicBoundaryConditions() const;
+
+
 private:
     class ConstraintInfo;
     Vec3 periodicBoxVectors[3];
@@ -251,6 +284,8 @@ private:
     std::vector<ConstraintInfo> constraints;
     std::vector<Force*> forces;
     std::vector<VirtualSite*> virtualSites;
+    std::vector<int> QMexclude;  // this is list of "QM" atoms to exclude if computing vext for QM/MM
+
 };
 
 /**

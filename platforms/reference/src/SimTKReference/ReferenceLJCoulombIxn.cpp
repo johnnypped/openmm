@@ -187,7 +187,8 @@ void ReferenceLJCoulombIxn::setUseLJPME(double alpha, int meshSize[3]) {
 
 void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& atomCoordinates,
                                               vector<vector<double> >& atomParameters, vector<set<int> >& exclusions,
-                                              vector<Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal) const {
+                                              vector<Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal, 
+                                              double* vext_grid, const vector<int>& QMexclude, vector<Vec3>& PME_grid_positions ) const {
     typedef std::complex<double> d_complex;
 
     static const double epsilon     =  1.0;
@@ -208,7 +209,10 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     // data structures for computing vext_grid, make sure to free these at return!
     std::vector<int> ngrid;    // number of PME grid points
     ivec* particleindex;       // atom grid indices
-    double*  vext_grid;        /* this stores external potential evaluated on PME grid */    
+    // I'd rather not keep checking for null pointer, so let's introduce boolean
+    bool compute_vext_grid=false;
+    if(vext_grid){ compute_vext_grid=true; }
+
 
     // A couple of sanity checks for
     if(ljpme && useSwitch)
@@ -216,7 +220,13 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     if(ljpme && !pme)
         throw OpenMMException("LJPME has been set, without PME being set");
 
+    /*
     printf("in ReferenceLJCoulombIxn\n");
+
+    for(int i=0; i < QMexclude.size(); i++){
+        printf(" exclusion %d  %d \n" , i , QMexclude[i] );
+    }
+    */
 
     // **************************************************************************************
     // SELF ENERGY
@@ -274,9 +284,6 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
             pme_copy_particleindex( pmedata, particleindex );
 
             // save electrostatic potential on PME grid, before pme_destroy
-            // Allocate vext grid storage
-            vext_grid = (double *) malloc(sizeof(double)*nx*ny*nz);
-
             // copy pme grid over to vext_grid.  After call of pme_exec, pme grid should by default store the external potential
             pme_copy_grid_real( pmedata, vext_grid );
         }
@@ -566,13 +573,13 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     int nz = ngrid[2];
 
     // print pme data that's been copied over ..
-    printf("PME grid size  %d %d %d \n",  nx , ny , nz  );
-    /*printf("PME particle grid indices\n");
+    /*printf("PME grid size  %d %d %d \n",  nx , ny , nz  );
+      printf("PME particle grid indices\n");
     for (int i = 0; i < numberOfAtoms; i++)
         printf("%d  %d  %d \n", particleindex[i][0] , particleindex[i][1] , particleindex[i][2] );
     */
   
-  
+    /*  
     printf("reciprocal space external potential on grid\n");
     for (int i = 0; i < nx; i++){
         for (int j = 0; j < ny; j++){
@@ -582,7 +589,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
             }
         }
     }
-    
+    */
 
     // get reciprocal box vectors
     Vec3 recipBoxVectors[3];
@@ -594,9 +601,11 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         dgrid[i] = floor( cutoffDistance*recip_norm*ngrid[i] ) + 1;
     }
 
+    /*
     printf(" alpha Ewald setting %f \n" , alphaEwald );
     printf(" real space cutoff %f \n" , cutoffDistance );
     printf(" dgrid real space %d  %d  %d \n", dgrid[0] , dgrid[1] , dgrid[2] );
+    */
 
     // currently this will only work for orthorhombic box, see minimum image function
     // ReferenceForce::getDeltaRPeriodic(const Vec3& atomCoordinatesI, const Vec3& atomCoordinatesJ,
@@ -609,6 +618,48 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     printf("   need to change source if using non-orthorhombic simulation box  !! \n"); 
 
 
+    // Keep track of exclusions from QM region.  Don't include contribution to vext grid from QM  atoms,
+    // need to subtract off these contributions from reciprocal space
+    // not the cleanest way to do it, but we introduce new data structure with zero's and one's ...
+
+    int* QMexclusion_flag;       // QM_exclusions
+    QMexclusion_flag = (int *) malloc(sizeof(int)*numberOfAtoms);
+    // initialize data structure with zero's...
+    for (int i =0; (i < numberOfAtoms); i++)
+        QMexclusion_flag[i] = 0;
+    // set to 1's for QM atoms
+    for(int i=0; i < QMexclude.size(); i++) {
+        int index = QMexclude[i];
+        QMexclusion_flag[index]=1;
+    }
+
+    /*   
+    printf(" ********** QM exclusion map ************** \n");
+    for (int i =0; (i < numberOfAtoms); i++)
+        printf( "%d  %d \n" , i, QMexclusion_flag[i] );
+    */
+
+    // Store absolute positions of PME grid cells
+    for (int ia = 0; ia < ngrid[0] ; ia++){
+        for (int ib = 0; ib < ngrid[1] ; ib++){
+            for (int ic = 0; ic < ngrid[2] ; ic++){
+                int index = ia*ngrid[1]*ngrid[2] + ib*ngrid[2] + ic;
+                PME_grid_positions[index][0]=0.0;
+                PME_grid_positions[index][1]=0.0;
+                PME_grid_positions[index][2]=0.0;
+                int igrid[3];
+                igrid[0] = ia ;
+                igrid[1] = ib ;
+                igrid[2] = ic ;
+                for(int j=0; j<3; j++){
+                    for(int k=0; k<3; k++)
+                        PME_grid_positions[index][k] += (double)igrid[j] / ngrid[j] * periodicBoxVectors[j][k] ; 
+                }
+            }
+        }
+    }
+
+
     // compute real-space contribution to vext grid, and add to previously stored reciprocal space contribution.
     for (int i = 0; (i < numberOfAtoms); i++) {
         double q_i = atomParameters[i][QIndex];
@@ -619,6 +670,8 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         int iy = particleindex[i][1];
         int iz = particleindex[i][2];
 
+        //printf(" PME particle index %d %d %d %d \n" , i , ix , iy , iz );
+
         int igrid[3];
         // fill in contribution to vext to all grid points within realspace cutoff of this atom
         for (int ia = -dgrid[0]; ia < dgrid[0] + 1; ia++){
@@ -627,20 +680,6 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                     igrid[0] = ix + ia;
                     igrid[1] = iy + ib;
                     igrid[2] = iz + ic;               
-                    // get real space distance from atom to this grid point
-                    Vec3 r_grid;
-                    r_grid[0]=0.0;
-                    r_grid[1]=0.0;
-                    r_grid[2]=0.0;
-  
-
-                  for(int j=0; j<3; j++)
-                    {   for(int k=0; k<3; k++)
-                           { r_grid[k]+= (double)igrid[j] / ngrid[j] * periodicBoxVectors[j][k] ; }
-                    }
-                    // minimum image, see comments above about orthrhombic box limitation
-                    Vec3 dr = ReferenceForce::getDeltaRPeriodic( r_grid , r_i , periodicBoxVectors ); 
-                    double inverseR = 1.0 / sqrt(dr.dot(dr));
 
                     // conditionals are slow, see trick in ReferencePME.cpp if we want to speed this up ...
                     if (igrid[0] < 0 ){ igrid[0] += ngrid[0]; }
@@ -650,13 +689,42 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                     if (igrid[1] >= ngrid[1] ){ igrid[1] -= ngrid[1]; }
                     if (igrid[2] >= ngrid[2] ){ igrid[2] -= ngrid[2]; }
 
-
                     int index = igrid[0]*ngrid[1]*ngrid[2] + igrid[1]*ngrid[2] + igrid[2];
+
+                    // get real space distance from atom to this grid point
+                    Vec3 r_grid;
+                    for(int k=0; k<3; k++)
+                        r_grid[k] = PME_grid_positions[index][k];
+                    
+                    // minimum image, see comments above about orthrhombic box limitation
+                    Vec3 dr = ReferenceForce::getDeltaRPeriodic( r_grid , r_i , periodicBoxVectors );
+                    double inverseR = 1.0 / sqrt(dr.dot(dr));
                     double alphaR = alphaEwald / inverseR ;  // just alpha * r 
 
-                    // add contribution to vext
-                    vext_grid[index] += ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
+                    /************************* add contribution to vext   **************************************/
+                    /*  For enhanced speed, uncomment code in 'if' statement below, and comment entire code block starting with
+                    *   "For QMatoms, subtract off ...."  .  The code in the block below subtracts off QM contributions
+                    *   to grid points within the real-space cutoff, while the code block "For QMatoms, subtract off ...." subtracts off
+                    *   QM contributions to all grid points.  While we probably only need to subtract off QMatom contribution to QMregion,
+                    *   and can use the faster code block, we keep the less efficient code as it is easier to have QM contributions removed
+                    *   from all PME grid points for testing purposes.
+                    */
 
+                    // If QM exclusion, subtract reciprocal space
+                    if ( QMexclusion_flag[i] == 1 ){
+                        /*
+                        if (erf(alphaR) > 1e-6) {
+                            vext_grid[index] -= ONE_4PI_EPS0*q_i*inverseR*erf(alphaR); 
+                        }
+                        else{
+                            vext_grid[index] -= alphaEwald*TWO_OVER_SQRT_PI*ONE_4PI_EPS0*q_i;
+                        }
+                        */
+                    }
+                    // Not QM exclusion, add real space, subtract recip space
+                    else{
+                        vext_grid[index] += ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
+                    }
                      /*
                      double fac = ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
                      printf( " %d %d %d %d %d %d %d %f %f %f \n" , i , ix , iy , iz , igrid[0] , igrid[1] , igrid[2] , alphaR , inverseR , fac );
@@ -666,11 +734,51 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
             }
         }
 
+
+        //**************** For QMatoms, subtract off contribution for all grid points ******
+        if ( QMexclusion_flag[i] == 1 ){
+
+            for (int ia = 0; ia < ngrid[0] ; ia++){
+                for (int ib = 0; ib < ngrid[1] ; ib++){
+                    for (int ic = 0; ic < ngrid[2] ; ic++){
+                        igrid[0] = ia ;
+                        igrid[1] = ib ;
+                        igrid[2] = ic ;
+                        if (igrid[0] < 0 ){ igrid[0] += ngrid[0]; }
+                        if (igrid[1] < 0 ){ igrid[1] += ngrid[1]; }
+                        if (igrid[2] < 0 ){ igrid[2] += ngrid[2]; }
+                        if (igrid[0] >= ngrid[0] ){ igrid[0] -= ngrid[0]; }
+                        if (igrid[1] >= ngrid[1] ){ igrid[1] -= ngrid[1]; }
+                        if (igrid[2] >= ngrid[2] ){ igrid[2] -= ngrid[2]; }
+
+                        int index = igrid[0]*ngrid[1]*ngrid[2] + igrid[1]*ngrid[2] + igrid[2];
+                        // get real space distance from atom to this grid point
+                        Vec3 r_grid;
+                        for(int k=0; k<3; k++)
+                            r_grid[k] = PME_grid_positions[index][k];
+                        // minimum image, see comments above about orthrhombic box limitation
+                        Vec3 dr = ReferenceForce::getDeltaRPeriodic( r_grid , r_i , periodicBoxVectors );
+                        double inverseR = 1.0 / sqrt(dr.dot(dr));
+                        double alphaR = alphaEwald / inverseR ;  // just alpha * r
+
+                        if (erf(alphaR) > 1e-6) {
+                            vext_grid[index] -= ONE_4PI_EPS0*q_i*inverseR*erf(alphaR);
+                        }
+                        else{
+                            vext_grid[index] -= alphaEwald*TWO_OVER_SQRT_PI*ONE_4PI_EPS0*q_i;
+                        }
+
+                    }
+                }
+            }    
+
+        }
+
     }
 
-
-    printf("real space plus reciprocal space external potential on grid\n");
-    for (int i = 0; i < nx; i++){
+  
+//    printf("real space plus reciprocal space external potential on grid\n");
+/*    for (int i = 0; i < nx; i++){
         for (int j = 0; j < ny; j++){
             for (int k = 0; k < nz; k++){
                 int index = i*ny*nz + j*nz + k;
@@ -678,13 +786,13 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
             }
         }
     }
-
+*/
 
 
     /*   Free allocated memory from copied PME data structures */
     free(particleindex);
-    free(vext_grid);
-
+    // temporary data structure
+    free(QMexclusion_flag);
 }
 
 
@@ -707,11 +815,12 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
 void ReferenceLJCoulombIxn::calculatePairIxn(int numberOfAtoms, vector<Vec3>& atomCoordinates,
                                              vector<vector<double> >& atomParameters, vector<set<int> >& exclusions,
-                                             vector<Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal) const {
+                                             vector<Vec3>& forces, double* totalEnergy, bool includeDirect, bool includeReciprocal,
+                                             double* vext_grid, const vector<int>& QMexclude , vector<Vec3>& PME_grid_positions ) const {
 
     if (ewald || pme || ljpme) {
         calculateEwaldIxn(numberOfAtoms, atomCoordinates, atomParameters, exclusions, forces,
-                          totalEnergy, includeDirect, includeReciprocal);
+                          totalEnergy, includeDirect, includeReciprocal, vext_grid, QMexclude, PME_grid_positions);
         return;
     }
     if (!includeDirect)

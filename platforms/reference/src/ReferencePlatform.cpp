@@ -77,6 +77,8 @@ ReferencePlatform::ReferencePlatform() {
     registerKernelFactory(ApplyAndersenThermostatKernel::Name(), factory);
     registerKernelFactory(ApplyMonteCarloBarostatKernel::Name(), factory);
     registerKernelFactory(RemoveCMMotionKernel::Name(), factory);
+    platformProperties.push_back(ReferenceVextGrid());
+    setPropertyDefaultValue(ReferenceVextGrid(), "false");
 }
 
 double ReferencePlatform::getSpeed() const {
@@ -87,8 +89,13 @@ bool ReferencePlatform::supportsDoublePrecision() const {
     return true;
 }
 
+
 void ReferencePlatform::contextCreated(ContextImpl& context, const map<string, string>& properties) const {
-    context.setPlatformData(new PlatformData(context.getSystem()));
+    // check properties to see if we are asking for VextGrid calculation ...
+    string ReferenceVextGridValue = (properties.find(ReferenceVextGrid()) == properties.end() ?
+            getPropertyDefaultValue(ReferenceVextGrid()) : properties.find(ReferenceVextGrid())->second);    
+    transform(ReferenceVextGridValue.begin(), ReferenceVextGridValue.end(), ReferenceVextGridValue.begin(), ::tolower);
+    context.setPlatformData(new PlatformData(context.getSystem(), (ReferenceVextGridValue == "true") ));
 }
 
 void ReferencePlatform::contextDestroyed(ContextImpl& context) const {
@@ -96,7 +103,7 @@ void ReferencePlatform::contextDestroyed(ContextImpl& context) const {
     delete data;
 }
 
-ReferencePlatform::PlatformData::PlatformData(const System& system) : time(0.0), stepCount(0), numParticles(system.getNumParticles()) {
+ReferencePlatform::PlatformData::PlatformData(const System& system, bool ReferenceVextGridValue ) : time(0.0), stepCount(0), numParticles(system.getNumParticles()), QMexclude(system.getQMexclude())  {
     positions = new vector<Vec3>(numParticles);
     velocities = new vector<Vec3>(numParticles);
     forces = new vector<Vec3>(numParticles);
@@ -104,6 +111,32 @@ ReferencePlatform::PlatformData::PlatformData(const System& system) : time(0.0),
     periodicBoxVectors = new Vec3[3];
     constraints = new ReferenceConstraints(system);
     energyParameterDerivatives = new map<string, double>();
+
+    propertyValues[ReferenceVextGrid()] = ReferenceVextGridValue ? "true" : "false" ;
+
+    // If requesting VextGrid ...
+    if ( ReferenceVextGridValue ){
+
+        // need grid info to allocate vext_grid , need NonbondForce for this...
+        double alpha;
+        int nx, ny, nz;
+        int numForces = system.getNumForces();
+        for (int i=0;i<numForces;i++){
+            // see if this is a NonbondedForce
+            NonbondedForce* nbforce = dynamic_cast<NonbondedForce*>(const_cast<Force*>(&system.getForce(i)) );
+            if( nbforce ){
+                nbforce->getPMEParameters( alpha , nx , ny , nz );
+            }
+
+        }
+        //Assume that we have a NonbondedForce ... might want to put a check for this in the future ...
+        // Allocate vext grid storage
+        vext_grid = (double *) malloc(sizeof(double)*nx*ny*nz);
+        //vext_grid = new vector<double>(nx*ny*nz);  
+
+        // Allocate PME_grid_positions
+        PME_grid_positions = new vector<Vec3>(nx*ny*nz);
+    }
 }
 
 ReferencePlatform::PlatformData::~PlatformData() {
@@ -114,4 +147,10 @@ ReferencePlatform::PlatformData::~PlatformData() {
     delete[] (Vec3*) periodicBoxVectors;
     delete (ReferenceConstraints*) constraints;
     delete (map<string, double>*) energyParameterDerivatives;
+    if ( propertyValues[ReferenceVextGrid()] == "true" ){
+        // Delete vext grid storage
+        free(vext_grid);
+        //delete (vector<double>*) vext_grid;
+        delete (vector<Vec3>*) PME_grid_positions;
+    }
 }
