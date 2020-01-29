@@ -27,6 +27,7 @@
 #include <complex>
 #include <algorithm>
 #include <iostream>
+#include <unordered_set>
 
 #include "SimTKOpenMMUtilities.h"
 #include "ReferenceLJCoulombIxn.h"
@@ -572,25 +573,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     int ny = ngrid[1];
     int nz = ngrid[2];
 
-    // print pme data that's been copied over ..
-    /*printf("PME grid size  %d %d %d \n",  nx , ny , nz  );
-      printf("PME particle grid indices\n");
-    for (int i = 0; i < numberOfAtoms; i++)
-        printf("%d  %d  %d \n", particleindex[i][0] , particleindex[i][1] , particleindex[i][2] );
-    */
   
-    /*  
-    printf("reciprocal space external potential on grid\n");
-    for (int i = 0; i < nx; i++){
-        for (int j = 0; j < ny; j++){
-            for (int k = 0; k < nz; k++){
-                int index = i*ny*nz + j*nz + k;
-                printf("%d %d %d  %f \n" , i , j , k , vext_grid[index] );
-            }
-        }
-    }
-    */
-
     // get reciprocal box vectors
     Vec3 recipBoxVectors[3];
     invert_box_vectors(periodicBoxVectors , recipBoxVectors);
@@ -601,24 +584,37 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         dgrid[i] = floor( cutoffDistance*recip_norm*ngrid[i] ) + 1;
     }
 
-    /*
-    printf(" alpha Ewald setting %f \n" , alphaEwald );
-    printf(" real space cutoff %f \n" , cutoffDistance );
-    printf(" dgrid real space %d  %d  %d \n", dgrid[0] , dgrid[1] , dgrid[2] );
-    */
 
-    // currently this will only work for orthorhombic box, see minimum image function
-    // ReferenceForce::getDeltaRPeriodic(const Vec3& atomCoordinatesI, const Vec3& atomCoordinatesJ,
-    //                                const Vec3* boxVectors) {
-    // Need to use a PBC function for non-orthogonal boxes.
-    // Also, if atomic coordinates have been converted to rectangular cell from non-rectangular cell,
-    // this could be problem that should be checked...
-    printf(" **************************** Important Note ************************ \n" );
-    printf("   currently, vext grid calculation is only implemented for orthorhombic cell \n");
-    printf("   need to change source if using non-orthorhombic simulation box  !! \n"); 
+    // Use neighbor list to find atoms within cutoff from QM region.  Fill a vector with all neighbors
+    // of every atom in the QMregion, and use these for real-space interactions with the PMEgrid
 
+    printf(" searching for QM neighbors from system neighbor list ...");
 
-    // Keep track of exclusions from QM region.  Don't include contribution to vext grid from QM  atoms,
+    std::unordered_set<int> QMneighbors;  // data structure which we will fill with neighbors of QM region.
+//****** first add QMexclude atoms to QMneighbors
+    for(int i=0; i < QMexclude.size(); i++) {
+        int index = QMexclude[i];
+        QMneighbors.insert(index);
+    }
+
+// *******    This collects neighbors from entire QM region.  Note there's a lot of vector searching,
+// *******    so will be slow---if this is a problem, could force QMexclude to be ordered, then use binary search...
+    for (auto& pair : *neighborList) {
+        int ii = pair.first;
+        int jj = pair.second;
+        if ( std::find(QMexclude.begin(), QMexclude.end(), ii) != QMexclude.end() ) {
+            // this is QMregion atom, insert (only if not in set)
+             QMneighbors.insert(jj);
+        }
+        else if ( std::find(QMexclude.begin(), QMexclude.end(), jj) != QMexclude.end() ) {
+            // this is QMregion atom, insert (only if not in set)
+            QMneighbors.insert(ii);
+        }
+    }
+
+    printf(" done searching for QM neighbors");
+
+    // Keep track of exclusions from QM region.  Don't include contribution to vext grid from QM atoms,
     // need to subtract off these contributions from reciprocal space
     // not the cleanest way to do it, but we introduce new data structure with zero's and one's ...
 
@@ -659,9 +655,12 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         }
     }
 
-
+ 
+    //printf( " QM neighbors \n");
     // compute real-space contribution to vext grid, and add to previously stored reciprocal space contribution.
-    for (int i = 0; (i < numberOfAtoms); i++) {
+    //for (int i = 0; (i < numberOfAtoms); i++) {
+    for (auto& i : QMneighbors) {
+        //printf(" %d  \n" , i );
         double q_i = atomParameters[i][QIndex];
         Vec3 r_i = atomCoordinates[i];
 
@@ -677,17 +676,11 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         for (int ia = -dgrid[0]; ia < dgrid[0] + 1; ia++){
             for (int ib = -dgrid[1]; ib < dgrid[1] + 1; ib++){
                 for (int ic = -dgrid[2]; ic < dgrid[2] + 1; ic++){
-                    igrid[0] = ix + ia;
-                    igrid[1] = iy + ib;
-                    igrid[2] = iz + ic;               
 
-                    // conditionals are slow, see trick in ReferencePME.cpp if we want to speed this up ...
-                    if (igrid[0] < 0 ){ igrid[0] += ngrid[0]; }
-                    if (igrid[1] < 0 ){ igrid[1] += ngrid[1]; }
-                    if (igrid[2] < 0 ){ igrid[2] += ngrid[2]; } 
-                    if (igrid[0] >= ngrid[0] ){ igrid[0] -= ngrid[0]; }
-                    if (igrid[1] >= ngrid[1] ){ igrid[1] -= ngrid[1]; }
-                    if (igrid[2] >= ngrid[2] ){ igrid[2] -= ngrid[2]; }
+                    // use trick in ReferencePME.cpp to avoid conditionals on PBC search ...
+                    igrid[0] = ( ix + ia + ngrid[0] ) % ngrid[0] ;
+                    igrid[1] = ( iy + ib + ngrid[1] ) % ngrid[1] ;
+                    igrid[2] = ( iz + ic + ngrid[2] ) % ngrid[2] ;
 
                     int index = igrid[0]*ngrid[1]*ngrid[2] + igrid[1]*ngrid[2] + igrid[2];
 
@@ -700,6 +693,13 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                     Vec3 dr = ReferenceForce::getDeltaRPeriodic( r_grid , r_i , periodicBoxVectors );
                     double inverseR = 1.0 / sqrt(dr.dot(dr));
                     double alphaR = alphaEwald / inverseR ;  // just alpha * r 
+
+                    // extremely rare to have a divide by zero if particle is exactly on PME grid.
+                    // this will almost never happen, so hopefully following conditional is harmless in terms
+                    // of speed/slowdown, but better throw an exception rather than not do anything...
+                    if ( alphaR < 1e-6 )
+                        throw OpenMMException("particle is exactly on PMEgrid, vext will diverge!");
+
 
                     /************************* add contribution to vext   **************************************/
                     /*  For enhanced speed, uncomment code in 'if' statement below, and comment entire code block starting with
@@ -725,11 +725,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                     else{
                         vext_grid[index] += ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
                     }
-                     /*
-                     double fac = ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
-                     printf( " %d %d %d %d %d %d %d %f %f %f \n" , i , ix , iy , iz , igrid[0] , igrid[1] , igrid[2] , alphaR , inverseR , fac );
-                     printf( " %f %f %f %f %f %f \n", r_grid[0] , r_grid[1] , r_grid[2] , dr[0] , dr[1] , dr[2] ) ;
-                     */
+
                 }
             }
         }
@@ -744,12 +740,6 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                         igrid[0] = ia ;
                         igrid[1] = ib ;
                         igrid[2] = ic ;
-                        if (igrid[0] < 0 ){ igrid[0] += ngrid[0]; }
-                        if (igrid[1] < 0 ){ igrid[1] += ngrid[1]; }
-                        if (igrid[2] < 0 ){ igrid[2] += ngrid[2]; }
-                        if (igrid[0] >= ngrid[0] ){ igrid[0] -= ngrid[0]; }
-                        if (igrid[1] >= ngrid[1] ){ igrid[1] -= ngrid[1]; }
-                        if (igrid[2] >= ngrid[2] ){ igrid[2] -= ngrid[2]; }
 
                         int index = igrid[0]*ngrid[1]*ngrid[2] + igrid[1]*ngrid[2] + igrid[2];
                         // get real space distance from atom to this grid point
@@ -776,17 +766,6 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
     }
 
-  
-//    printf("real space plus reciprocal space external potential on grid\n");
-/*    for (int i = 0; i < nx; i++){
-        for (int j = 0; j < ny; j++){
-            for (int k = 0; k < nz; k++){
-                int index = i*ny*nz + j*nz + k;
-                printf("%d %d %d  %f \n" , i , j , k , vext_grid[index] );
-            }
-        }
-    }
-*/
 
 
     /*   Free allocated memory from copied PME data structures */
