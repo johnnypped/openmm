@@ -969,13 +969,12 @@ int pme_exec_dpme(pme_t       pme,
 
 /* this is called to access ngrid info outside pme module, which is necessary
  * as pme structure is defined here and not in header file  */
-std::vector<int> pme_return_gridsize(pme_t    pme)
+int pme_return_gridsize(pme_t  pme, vector<int>& ngrid )
 {
-    std::vector<int> ngrid_output;
-    ngrid_output.push_back( pme->ngrid[0] );
-    ngrid_output.push_back( pme->ngrid[1] );
-    ngrid_output.push_back( pme->ngrid[2] );
-    return ngrid_output;
+    ngrid[0] =  pme->ngrid[0] ;
+    ngrid[1] =  pme->ngrid[1] ;
+    ngrid[2] =  pme->ngrid[2] ;
+    return 0;
 }
 
 
@@ -1014,6 +1013,13 @@ int pme_copy_particleindex( pme_t pme, ivec* particleindex )
         for (int d=0;d<3;d++)
         { particleindex[i][d] =  pme->particleindex[i][d]; }
     }
+}
+
+int pme_copy_particleindex( pme_t pme, vector<vector<int>>& particleindex )
+{
+    for (int i=0;i<pme->natoms;i++)
+        for (int d=0;d<3;d++)
+            particleindex[i][d] = pme->particleindex[i][d] ; 
 }
 
 

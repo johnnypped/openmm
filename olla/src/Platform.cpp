@@ -85,7 +85,7 @@ const string& Platform::getPropertyValue(const Context& context, const string& p
     throw OpenMMException("getPropertyValue: Illegal property name");
 }
 
-void Platform::setPropertyValue(Context& context, const string& property, const string& value) const {
+void Platform::setPropertyValue(Context& context, const string& property, const string& value) {
     throw OpenMMException("setPropertyValue: Illegal property name");
 }
 

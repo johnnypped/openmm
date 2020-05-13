@@ -208,7 +208,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     double vdwEnergy                = 0.0;
 
     // data structures for computing vext_grid, make sure to free these at return!
-    std::vector<int> ngrid;    // number of PME grid points
+    std::vector<int> ngrid(3);    // number of PME grid points
     ivec* particleindex;       // atom grid indices
     // I'd rather not keep checking for null pointer, so let's introduce boolean
     bool compute_vext_grid=false;
@@ -275,7 +275,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         if (compute_vext_grid)
         {
             // grid size
-            ngrid = pme_return_gridsize(pmedata);
+            pme_return_gridsize(pmedata, ngrid);
             int nx = ngrid[0];
             int ny = ngrid[1];
             int nz = ngrid[2];
@@ -588,7 +588,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     // Use neighbor list to find atoms within cutoff from QM region.  Fill a vector with all neighbors
     // of every atom in the QMregion, and use these for real-space interactions with the PMEgrid
 
-    printf(" searching for QM neighbors from system neighbor list ...");
+    printf(" searching for QM neighbors from system neighbor list ...\n");
 
     std::unordered_set<int> QMneighbors;  // data structure which we will fill with neighbors of QM region.
 //****** first add QMexclude atoms to QMneighbors
@@ -612,7 +612,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         }
     }
 
-    printf(" done searching for QM neighbors");
+    printf(" done searching for QM neighbors\n");
 
     // Keep track of exclusions from QM region.  Don't include contribution to vext grid from QM atoms,
     // need to subtract off these contributions from reciprocal space
@@ -655,12 +655,11 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         }
     }
 
- 
-    //printf( " QM neighbors \n");
+
+
     // compute real-space contribution to vext grid, and add to previously stored reciprocal space contribution.
     //for (int i = 0; (i < numberOfAtoms); i++) {
     for (auto& i : QMneighbors) {
-        //printf(" %d  \n" , i );
         double q_i = atomParameters[i][QIndex];
         Vec3 r_i = atomCoordinates[i];
 
@@ -669,7 +668,6 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
         int iy = particleindex[i][1];
         int iz = particleindex[i][2];
 
-        //printf(" PME particle index %d %d %d %d \n" , i , ix , iy , iz );
 
         int igrid[3];
         // fill in contribution to vext to all grid points within realspace cutoff of this atom
@@ -701,28 +699,8 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
                         throw OpenMMException("particle is exactly on PMEgrid, vext will diverge!");
 
 
-                    /************************* add contribution to vext   **************************************/
-                    /*  For enhanced speed, uncomment code in 'if' statement below, and comment entire code block starting with
-                    *   "For QMatoms, subtract off ...."  .  The code in the block below subtracts off QM contributions
-                    *   to grid points within the real-space cutoff, while the code block "For QMatoms, subtract off ...." subtracts off
-                    *   QM contributions to all grid points.  While we probably only need to subtract off QMatom contribution to QMregion,
-                    *   and can use the faster code block, we keep the less efficient code as it is easier to have QM contributions removed
-                    *   from all PME grid points for testing purposes.
-                    */
-
-                    // If QM exclusion, subtract reciprocal space
-                    if ( QMexclusion_flag[i] == 1 ){
-                        /*
-                        if (erf(alphaR) > 1e-6) {
-                            vext_grid[index] -= ONE_4PI_EPS0*q_i*inverseR*erf(alphaR); 
-                        }
-                        else{
-                            vext_grid[index] -= alphaEwald*TWO_OVER_SQRT_PI*ONE_4PI_EPS0*q_i;
-                        }
-                        */
-                    }
-                    // Not QM exclusion, add real space, subtract recip space
-                    else{
+                    if ( QMexclusion_flag[i] != 1 ){
+                        // Not QM exclusion, add real space, subtract recip space
                         vext_grid[index] += ONE_4PI_EPS0*q_i*inverseR*erfc(alphaR);
                     }
 
@@ -732,6 +710,9 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
 
         //**************** For QMatoms, subtract off contribution for all grid points ******
+        //   note that putting this in the above loop would be dangerous, as above loop only considers interactions
+        //   with grid points within dgrid of atom.  Numerical quadrature can extend long range, e.g. > 1 nanometer ,
+        //   and so it's safer to subtract QMatom contribution from ALL grid points to avoid any chance of self-interaction...
         if ( QMexclusion_flag[i] == 1 ){
 
             for (int ia = 0; ia < ngrid[0] ; ia++){

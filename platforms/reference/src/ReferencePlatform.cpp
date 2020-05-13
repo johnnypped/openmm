@@ -34,6 +34,7 @@
 #include "ReferenceKernelFactory.h"
 #include "ReferenceKernels.h"
 #include "openmm/internal/ContextImpl.h"
+#include "openmm/OpenMMException.h"
 #include "SimTKOpenMMRealType.h"
 #include "openmm/Vec3.h"
 #include <map>
@@ -88,6 +89,37 @@ double ReferencePlatform::getSpeed() const {
 bool ReferencePlatform::supportsDoublePrecision() const {
     return true;
 }
+
+
+const string& ReferencePlatform::getPropertyValue(const Context& context, const string& property) const {
+    const ContextImpl& impl = getContextImpl(context);
+    const PlatformData* data = reinterpret_cast<const PlatformData*>(impl.getPlatformData());
+    string propertyName = property;
+    if (deprecatedPropertyReplacements.find(property) != deprecatedPropertyReplacements.end())
+        propertyName = deprecatedPropertyReplacements.find(property)->second;
+    map<string, string>::const_iterator value = data->propertyValues.find(propertyName);
+    if (value != data->propertyValues.end())
+        return value->second;
+    return Platform::getPropertyValue(context, property);
+}
+
+
+
+void ReferencePlatform::setPropertyValue(Context& context, const string& property, const string& value) {
+    ContextImpl& impl = getContextImpl(context);
+    PlatformData* data = reinterpret_cast<PlatformData*>(impl.getPlatformData());
+    string propertyName = property;
+    if (deprecatedPropertyReplacements.find(property) != deprecatedPropertyReplacements.end())
+        propertyName = deprecatedPropertyReplacements.find(property)->second;
+    for (auto& prop : platformProperties){
+        if (prop == propertyName) {
+            data->propertyValues[propertyName] = value;
+            return;
+        }
+    }
+    throw OpenMMException("setPropertyValue: Illegal property name");
+}
+
 
 
 void ReferencePlatform::contextCreated(ContextImpl& context, const map<string, string>& properties) const {

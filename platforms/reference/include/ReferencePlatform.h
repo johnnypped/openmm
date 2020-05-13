@@ -62,7 +62,8 @@ public:
         return key;
     }
 
-
+    void setPropertyValue(Context& context, const std::string& property, const std::string& value);
+    const std::string& getPropertyValue(const Context& context, const std::string& property) const;
 
 };
 

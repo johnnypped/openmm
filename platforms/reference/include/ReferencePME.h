@@ -126,7 +126,8 @@ void invert_box_vectors(const Vec3 boxVectors[3], Vec3 recipBoxVectors[3]);
 /**
  * Return grid size from pme data structure
  */
-std::vector<int> pme_return_gridsize(pme_t pme);
+int OPENMM_EXPORT
+pme_return_gridsize(pme_t pme, std::vector<int>& ngrid);
 
 
 /**
@@ -146,6 +147,11 @@ pme_copy_grid_real(pme_t pme,
 int OPENMM_EXPORT
 pme_copy_particleindex(pme_t pme,
                        ivec* particleindex );
+
+/* copy particleindex data from pme */
+int OPENMM_EXPORT
+pme_copy_particleindex(pme_t pme,
+                       std::vector<std::vector<int>>& particleindex );
 
 
 /* Release all memory in pme structure */

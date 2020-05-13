@@ -102,7 +102,7 @@ public:
      * @param property    the name of the property to set
      * @param value       the value to set for the property
      */
-    virtual void setPropertyValue(Context& context, const std::string& property, const std::string& value) const;
+    virtual void setPropertyValue(Context& context, const std::string& property, const std::string& value);
     /**
      * Get the default value of a Platform-specific property.  This is the value that will be used for
      * newly created Contexts.
