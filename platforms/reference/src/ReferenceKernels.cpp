@@ -100,13 +100,9 @@ static vector<Vec3>& extractVelocities(ContextImpl& context) {
 }
 
 bool extractReferenceVextGrid(ContextImpl& context) {
-    ReferencePlatform::PlatformData* data = reinterpret_cast<ReferencePlatform::PlatformData*>(context.getPlatformData());
+    const Context& owner = context.getOwner();
     ReferencePlatform& platform = reinterpret_cast<ReferencePlatform&>(context.getPlatform());
-    std::map<std::string, std::string>& properties = data->propertyValues;
-  
-    string ReferenceVextGridValue = (properties.find(platform.ReferenceVextGrid()) == properties.end() ?
-            platform.getPropertyDefaultValue(platform.ReferenceVextGrid()) : properties.find(platform.ReferenceVextGrid())->second);
-    transform(ReferenceVextGridValue.begin(), ReferenceVextGridValue.end(), ReferenceVextGridValue.begin(), ::tolower);
+    string ReferenceVextGridValue = platform.getPropertyValue(owner, platform.ReferenceVextGrid() );
     return (ReferenceVextGridValue == "true");
 }
 
