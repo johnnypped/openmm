@@ -221,13 +221,13 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     if(ljpme && !pme)
         throw OpenMMException("LJPME has been set, without PME being set");
 
-    /*
+    
     printf("in ReferenceLJCoulombIxn\n");
 
     for(int i=0; i < QMexclude.size(); i++){
         printf(" exclusion %d  %d \n" , i , QMexclude[i] );
     }
-    */
+    
 
     // **************************************************************************************
     // SELF ENERGY
@@ -559,6 +559,8 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
     if (totalEnergy)
         *totalEnergy -= totalExclusionEnergy;
 
+    free(particleindex);
+    return;
 
     if (!compute_vext_grid)
         return;
@@ -599,7 +601,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
 
 // *******    This collects neighbors from entire QM region.  Note there's a lot of vector searching,
 // *******    so will be slow---if this is a problem, could force QMexclude to be ordered, then use binary search...
-    for (auto& pair : *neighborList) {
+/*    for (auto& pair : *neighborList) {
         int ii = pair.first;
         int jj = pair.second;
         if ( std::find(QMexclude.begin(), QMexclude.end(), ii) != QMexclude.end() ) {
@@ -610,7 +612,7 @@ void ReferenceLJCoulombIxn::calculateEwaldIxn(int numberOfAtoms, vector<Vec3>& a
             // this is QMregion atom, insert (only if not in set)
             QMneighbors.insert(ii);
         }
-    }
+    } */
 
     printf(" done searching for QM neighbors\n");
 
